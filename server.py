@@ -1,5 +1,8 @@
-def hola():
-    print('xd')
+def read_serverconf():
+    file = open("server.cfg", "r")
+    print(file.read())
 
 
-hola()
+read_serverconf()
+
+

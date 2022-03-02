@@ -76,7 +76,6 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
     cpy_token = strtok(NULL, "= ");
     strcpy((char *) client.server, cpy_token);
 
-
     //server-UDP
 
     fgets(info, MAX_CHAR, file);
