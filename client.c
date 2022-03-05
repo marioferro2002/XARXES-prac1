@@ -12,21 +12,33 @@ char *get_configname(int argc, char *argv[]);
 
 
 struct config_info {
-    unsigned char id[10];
-    unsigned char *elements[6];
-    unsigned char local_TCP[5];
-    unsigned char server[10];
-    unsigned char server_udp[5];
+    unsigned char id[11];
+    unsigned char elements[6][16];
+    unsigned char local_TCP[6];
+    unsigned char server[13];
+    unsigned char server_udp[6];
 
 };
+
+struct config_pdu_udp {
+    unsigned char type;
+    char id_transm[11];
+    char id_comm[11];
+    char dades[61];
+};
+
+
 
 int main(int argc, char *argv[]) {
 
     int debug_status;
     debug_status = check_debug_mode(argc,argv);
+
     printf("mode debug: %i \n",debug_status);
 
+
     struct config_info user = read_config_files(argc, argv, debug_status);
+
 
 }
 
@@ -51,22 +63,27 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
     cpy_token = strtok(info, " ");
     cpy_token = strtok(NULL, "= ");
     cpy_token = strtok(cpy_token, ";");
-    int i = 0;
-    client.elements[i] = cpy_token;
-    while (i < 5) {
-        i++;
-        cpy_token = strtok(NULL, ";");
-        client.elements[i] = cpy_token;
 
+    int i = 0;
+    while (cpy_token != NULL && i != 5){
+
+        strcpy((char *) client.elements[i], cpy_token);
+        cpy_token = strtok(NULL, ";");
+        printf("%s %i \n",client.elements[i], i);
+        i++;
     }
 
-    //local tcp
+
+
+
+
+    //local_tcp
+
     fgets(info, MAX_CHAR, file);
     info[strlen(info) - 1] = '\0';
     cpy_token = strtok(info, " ");
     cpy_token = strtok(NULL, "= ");
-    strcpy((char *) client.local_TCP, cpy_token);
-
+    strcpy((char *) client.local_TCP,cpy_token);
 
     //server
 
@@ -75,6 +92,7 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
     cpy_token = strtok(info, " ");
     cpy_token = strtok(NULL, "= ");
     strcpy((char *) client.server, cpy_token);
+
 
     //server-UDP
 
@@ -88,7 +106,7 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
 
 
     if(debug_mode == 1){
-        printf("Configuració del client guardada!!\n Id: %s \n Elements: %s \n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n", client.id, client.elements[0], client.local_TCP, client.server, client.server_udp);
+        printf("Configuració del client guardada!!\n Id: %s \n Elements: %s ...\n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n", client.id, client.elements[1], client.local_TCP, client.server, client.server_udp);
     }
     return client;
 }
@@ -109,3 +127,14 @@ char *get_configname(int argc, char *argv[]){
     }
     return "client.cfg";
 }
+
+/*char* decode_type(char type_code){
+    if(strcmp(type_code, (const char *) 'oxao')){
+        return 'n';
+    }
+}
+ */
+
+
+
+
