@@ -114,7 +114,7 @@ int register_client_connection (struct config_info client, int debugmode){
     struct config_pdu_udp reg_str = client_to_pdu(client);
     status = NOT_REGISTERED;
     wait_reg_status(status);
-    return 0;
+    return 1;
 
     //sendto(init_socket, reg_str, sizeof(reg_str), )
 }
