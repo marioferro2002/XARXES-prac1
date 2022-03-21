@@ -104,6 +104,10 @@ int register_client_connection (struct config_info client, int debugmode){
         printf("connexio dolenta");
         exit(-1);
     }
+    //Linkem adreça del servidor
+    sck_addr_reg.sin_addr.s_addr = htonl();
+    sck_addr_reg.sin_port = htons(client.server_udp);
+    sck_addr_reg.sin_family = AF_INET;
 
     //Preparem tos els paquets per al registre i començem amb l'estat WAIT_REG
 
@@ -111,6 +115,8 @@ int register_client_connection (struct config_info client, int debugmode){
     status = NOT_REGISTERED;
     wait_reg_status(status);
     return 0;
+
+    //sendto(init_socket, reg_str, sizeof(reg_str), )
 }
 
 
@@ -279,8 +285,14 @@ void show_status(int status) {
 }
 
 void wait_reg_status(int status){
+    int h, m, s;
+    time_t time_now = time(NULL);
+    struct tm *tm_struct = localtime(&time_now);
+    h = tm_struct -> tm_hour;
+    m = tm_struct -> tm_min;
+    s = tm_struct -> tm_sec;
 
-    printf("Dispositiu passa a l'estat: ");
+    printf("%i:%i:%i MSG: Dispositiu passa a l'estat: ", h, m, s);
     show_status(status);
 
 }
