@@ -73,7 +73,7 @@ int main(int argc, char *argv[]) {
 
 
     struct config_info user = read_config_files(argc, argv, debug_status);
-    print_start_status(user);
+    //print_start_status(user);
     int connect = register_client_connection(user, debug_status);
 
 }
@@ -174,7 +174,8 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
     cpy_token = strtok(cpy_token, ";");
 
     int i = 0;
-    while (cpy_token != NULL && i != 5){
+
+    while (strlen(cpy_token) == 7){
 
         strcpy((char *) client.elements[i], cpy_token);
         cpy_token = strtok(NULL, ";");
@@ -214,7 +215,7 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
 
 
     if(debug_mode == 1){
-        printf("Configuració del client guardada!!\n Id: %s \n Elements: %s ...\n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n", client.id, client.elements[1], client.local_TCP, client.server, client.server_udp);
+        //printf("Configuració del client guardada!!\n Id: %s \n Elements: %s ...\n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n", client.id, client.elements[1], client.local_TCP, client.server, client.server_udp);
     }
     return client;
 }
@@ -244,8 +245,9 @@ void print_start_status(struct config_info info) {
     printf(" Param      valor\n");
     printf(" -----      --------\n");
     int i = 0;
-   while(info.elements[i] != " "){
-       printf("%s\n", info.elements[4]);
+
+   while(i < 5){
+           printf("%s          None\n", info.elements[i]);
        i++;
    }
 
