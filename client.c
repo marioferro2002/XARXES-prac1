@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <time.h>
+#include <netdb.h>
 
 #define MAX_CHAR 51 //El tamany del array es tan gran a causa de la linea d'elements
 #define T 1
@@ -12,6 +13,7 @@
 #define O 3
 #define P 2
 #define Q 4
+
 
 //Tipus de paquets
 
@@ -33,7 +35,6 @@
 #define WAIT_ACK_INFO 0xf4
 #define REGISTERED 0xf5
 #define SEND_ALIVE 0xf6
-int status = DISCONNECTED;
 
 struct config_info {
     unsigned char id[11];
@@ -51,6 +52,16 @@ struct config_pdu_udp {
     char dades[61];
 };
 
+struct socket_pck {
+    int udp_socket;
+    struct sockaddr_in udp_addr;
+
+};
+
+
+//Variables globals
+int status = DISCONNECTED;
+struct socket_pck sock;
 
 //Funcions main
 int check_debug_mode(int argc, char *argv[]);
@@ -61,10 +72,11 @@ void show_status(int status);
 struct config_info read_config_files(int argc, char *argv[], int debug_mode);
 char *get_configname(int argc, char *argv[]);
 struct config_pdu_udp client_to_pdu (struct config_info config);
-int register_client_connection (struct config_info client, int debugmode);
+void register_client_connection (struct config_info client, int debugmode);
 unsigned char* create_pack_udp(struct config_pdu_udp udp_pack, char type);
 void wait_reg_status(int status);
-
+void udp_socket(struct config_info client);
+void send_udp_package(struct config_info client, unsigned char type);
 
 
 int main(int argc, char *argv[]) {
@@ -76,51 +88,74 @@ int main(int argc, char *argv[]) {
 
     struct config_info user = read_config_files(argc, argv, debug_status);
     print_start_status(user);
-    int connect = register_client_connection(user, debug_status);
+    register_client_connection(user, debug_status);
 
 }
 
 
 
 
-int register_client_connection (struct config_info client, int debugmode){
+void register_client_connection (struct config_info client, int debugmode){
 
-    int init_socket;
+    udp_socket(client);
+    send_udp_package(client,REG_REQ);
+    struct config_pdu_udp reg_server;
+    recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
+
+
+}
+void udp_socket(struct config_info client){
+    struct sockaddr_in sck_addr_reg;
+    struct hostent *ent;
+
     //Creem socket
-    init_socket = socket(AF_INET, SOCK_DGRAM, 0);
-    if (init_socket < 0){
-        printf("Error al crear Socket %i", init_socket);
+    sock.udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock.udp_socket < 0){
+        printf("Error al crear Socket %i", sock.udp_socket);
         exit(-1);
     }
 
-    //Creem constructors y variables necessaries per al bind i comunicació amb el server
-    struct sockaddr_in sck_addr_reg;
-    sck_addr_reg.sin_addr.s_addr = htonl(0);
+    memset(&sck_addr_reg, 0, sizeof(struct sockaddr_in));
+    sck_addr_reg.sin_addr.s_addr = htonl(INADDR_ANY);
     sck_addr_reg.sin_port = htonl(0);
     sck_addr_reg.sin_family = AF_INET;
 
 
-    if( bind(init_socket,(struct sockaddr*)&sck_addr_reg, sizeof(struct sockaddr)) != 0 ){
+    if( bind(sock.udp_socket,(struct sockaddr *)&sck_addr_reg, sizeof(sck_addr_reg)) < 0 ){
         printf("connexio dolenta");
         exit(-1);
     }
-    //Linkem adreça del servidor
-    sck_addr_reg.sin_addr.s_addr = htonl();
-    sck_addr_reg.sin_port = htons(client.server_udp);
-    sck_addr_reg.sin_family = AF_INET;
 
-    //Preparem tos els paquets per al registre i començem amb l'estat WAIT_REG
 
-    struct config_pdu_udp reg_str = client_to_pdu(client);
-    status = NOT_REGISTERED;
-    wait_reg_status(status);
-    return 1;
+    ent = gethostbyname("localhost");
+    printf("%s\n", ent);
+    if(!ent)
+    {
+        printf("Error! No trobat: %s \n",client.server);
+        exit(-1);
+    }
 
-    //sendto(init_socket, reg_str, sizeof(reg_str), )
+    memset(&sock.udp_addr, 0, sizeof(struct sockaddr_in));
+    sock.udp_addr.sin_addr.s_addr = (((struct in_addr *)ent->h_addr_list[0])->s_addr);
+    sock.udp_addr.sin_port = htons(atoi("2022"));
+    sock.udp_addr.sin_family = AF_INET;
+
+
 }
 
+void send_udp_package(struct config_info client, unsigned char type){
+    struct config_pdu_udp reg_str = client_to_pdu(client);
+    reg_str.type = type;
+
+    int bytes_send = 0;
+    bytes_send = sendto(sock.udp_socket,(void *)&reg_str,sizeof(reg_str), 0, (const struct sockaddr*)&sock.udp_addr, sizeof(sock.udp_addr));
+    if(bytes_send != 84){
+        printf("tamañ no coincideix\n");
+    }
 
 
+
+}
 
 
 
@@ -145,9 +180,10 @@ int register_client_connection (struct config_info client, int debugmode){
 struct config_pdu_udp client_to_pdu (struct config_info config){
 
     struct config_pdu_udp reg_pack;
+
     strcpy((char *) reg_pack.id_transm,(const char *) config.id);
     strcpy((char *) reg_pack.id_comm,"0000000000");
-    strcpy(reg_pack.dades, "sdddddd");
+    strcpy(reg_pack.dades, "");
 
     return reg_pack;
 }
