@@ -8,7 +8,9 @@
 #include <stdbool.h>
 #include <unistd.h>
 
-#define MAX_CHAR 51 //El tamany del array es tan gran a causa de la linea d'elements
+//Doc General Defines
+
+#define MAX_CHAR 51
 #define T 1
 #define U 2
 #define N 8
@@ -17,7 +19,7 @@
 #define Q 4
 
 
-//Tipus de paquets
+//Packet_type
 
 #define REG_REQ 0xa0
 #define REG_ACK 0xa1
@@ -28,7 +30,7 @@
 #define INFO_NACK 0xa6
 #define INFO_REJ 0xa7
 
-//Estat del client/servidor
+//Client-server state
 
 #define DISCONNECTED 0xf0
 #define NOT_REGISTERED 0xf1
@@ -38,6 +40,7 @@
 #define REGISTERED 0xf5
 #define SEND_ALIVE 0xf6
 
+/*+++++++++++++++++++++STRUCTS+++++++++++++++++++++*/
 struct config_info {
     unsigned char id[11];
     unsigned char elements[6][8];
@@ -54,91 +57,116 @@ struct config_pdu_udp {
     char dades[61];
 };
 
+struct server_info {
+    char id_transm[11];
+    char id_comm[11];
+    char ip[9];
+};
+
 struct socket_pck {
     int udp_socket;
     struct sockaddr_in udp_addr;
-
 };
 
 
 //Variables globals
 int status = DISCONNECTED;
 struct socket_pck sock;
+struct server_info inf_server;
 
-//Funcions main
+/*+++++++++++++++++++++GLOBAL-FUNCTIONS+++++++++++++++++++++*/
 int check_debug_mode(int argc, char *argv[]);
 void print_start_status(struct config_info info);
 void show_status(unsigned char state);
-
-//Funcions registre
-struct config_info read_config_files(int argc, char *argv[], int debug_mode);
 char *get_configname(int argc, char *argv[]);
-struct config_pdu_udp client_to_pdu (struct config_info config);
+struct config_info read_config_files(int argc, char *argv[], int debug_mode);
+
+/*+++++++++++++++++++++REGISTER-FUNCTIONS+++++++++++++++++++++*/
+//Main register functions
 void register_client_connection (struct config_info client, int debugmode);
-void wait_reg_status(unsigned char status);
 void udp_socket(struct config_info client);
+struct config_pdu_udp client_to_pdu (struct config_info config);
+//send-recieve functions
 void send_udp_package(struct config_info client, unsigned char type);
 struct config_pdu_udp recv_pck_udp();
-void wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user);
+//ack-reg phase
+struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user);
 struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, struct config_info user);
+//Prints
+void wait_reg_status(unsigned char status);
+//Error control
+bool valid_tcp_port(struct config_pdu_udp tcp_pack);
+bool valid_server(struct config_pdu_udp server_pack);
+
+/*+++++++++++++++++++++ALIVE-STATE-FUNCTIONS+++++++++++++++++++++*/
 
 int main(int argc, char *argv[]) {
 
     int debug_status;
-    debug_status = check_debug_mode(argc,argv);
-    printf("mode debug: %i \n",debug_status);
-
-
     struct config_info user = read_config_files(argc, argv, debug_status);
 
+    debug_status = check_debug_mode(argc,argv);
+    printf("mode debug: %i \n",debug_status);
     print_start_status(user);
+    //fase register
+    status = NOT_REGISTERED;
     register_client_connection(user, debug_status);
+    //fase alive
 
 }
 
 
-
+/*------------------------------FASE REGISTER---------------------------------------------------*/
 
 void register_client_connection (struct config_info client, int debugmode){
 
     udp_socket(client);
     int unfinished_register_try = 0;
 
+    while (unfinished_register_try < O && status != REGISTERED){
+        printf("Intent de registre: %i \n", unfinished_register_try + 1);
+        wait_reg_status(status);
+        status = WAIT_ACK_REG;
+        wait_reg_status(status);
 
-    while (unfinished_register_try < O){
+        for(int i = 0; i < N; i++) {
 
-        for(int i = 0; i < P; i++) {
             struct config_pdu_udp pck_recieved;
             send_udp_package(client,REG_REQ);
-            status = WAIT_ACK_REG;
-            wait_reg_status(status);
             pck_recieved = recv_pck_udp();
 
             if (pck_recieved.type == REG_ACK && status == WAIT_ACK_REG){
-                wait_ack_reg_phase(REG_INFO, pck_recieved, client);
-                return;
-            }else if (pck_recieved.type == REG_NACK){
-                show_status(REG_NACK);
-            }else if (pck_recieved.type == REG_REJ){
-                show_status(REG_REJ);
-            }else if (pck_recieved.type == INFO_NACK){
-                show_status(INFO_NACK);
+                pck_recieved = wait_ack_reg_phase(REG_INFO, pck_recieved, client);
             }
-            else{
-                printf("paquet inesperat");
+            if (pck_recieved.type == REG_NACK){
+                status = NOT_REGISTERED;
+                wait_reg_status(status);
+            }
+            if (pck_recieved.type == REG_REJ){
+                //status = NOT_REGISTERED;
+                //wait_reg_status(status);
+                //break;
+            }
+            if (pck_recieved.type == INFO_ACK && status == WAIT_ACK_INFO && valid_server(pck_recieved)){
+                status = REGISTERED;
+                wait_reg_status(status);
+                break;
+            }
+            if (pck_recieved.type == INFO_NACK && status == WAIT_ACK_INFO){
+
+            }else{
                 status = NOT_REGISTERED;
                 unfinished_register_try++;
             }
-
         }
-        sleep(5);
-
+        sleep(2);
         unfinished_register_try++;
     }
 
 }
+/*-----------------------------------------SOCKETS & PACKETS STATES---------------------------*/
 void udp_socket(struct config_info client){
-    struct sockaddr_in sck_addr_reg;
+    struct sockaddr_in client_addr;
     struct hostent *ent;
 
     sock.udp_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -147,13 +175,12 @@ void udp_socket(struct config_info client){
         exit(-1);
     }
 
-    memset(&sck_addr_reg, 0, sizeof(struct sockaddr_in));
-    sck_addr_reg.sin_addr.s_addr = htonl(INADDR_ANY);
-    sck_addr_reg.sin_port = htonl(0);
-    sck_addr_reg.sin_family = AF_INET;
+    memset(&client_addr, 0, sizeof(struct sockaddr_in));
+    client_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    client_addr.sin_port = htonl(0);
+    client_addr.sin_family = AF_INET;
 
-
-    if( bind(sock.udp_socket,(struct sockaddr *)&sck_addr_reg, sizeof(sck_addr_reg)) < 0 ){
+    if(bind(sock.udp_socket, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0 ){
         printf("connexio dolenta");
         exit(-1);
     }
@@ -174,39 +201,14 @@ void udp_socket(struct config_info client){
 
 }
 
-void send_udp_package(struct config_info client, unsigned char type){
-    struct config_pdu_udp reg_str = client_to_pdu(client);
-    reg_str.type = type;
-    int bytes_send = 0;
-
-
-    bytes_send = sendto(sock.udp_socket,(void *)&reg_str,sizeof(reg_str), 0, (const struct sockaddr*)&sock.udp_addr, sizeof(sock.udp_addr));
-
-    if(bytes_send != 84){
-        printf("tamañ no coincideix\n");
-    }
-
-}
-
-struct config_pdu_udp recv_pck_udp(){
-    struct config_pdu_udp reg_server;
-    int a = 0;
-    a = recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
-    if(a < 0){
-        printf("No s'ha rebut cap paquet per UDP");
-        exit(1);
-    }
-    return reg_server;
-}
-
-void wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user){
+struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user){
 
     struct sockaddr_in addr_tcp_port = sock.udp_addr;
     unsigned char server_port[6];
     int bytes_send = 0;
+    struct config_pdu_udp info_ack_packet;
 
     tcp_pck.type = REG_INFO;
-    show_status(tcp_pck.type);
 
     //Creem copia de la addreça i canviem port
     strcpy((char *)server_port, tcp_pck.dades);
@@ -216,24 +218,52 @@ void wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, stru
 
     bytes_send = sendto(sock.udp_socket,(void *)&tcp_pck,sizeof(tcp_pck), 0, (const struct sockaddr*)&addr_tcp_port, sizeof(addr_tcp_port));
 
-    if (bytes_send != 84){
-        exit(1);
-    }
-    struct config_pdu_udp info_ack_packet;
 
-    sleep(2 * T);
+    status = WAIT_ACK_INFO;
+    wait_reg_status(status);
+    recvfrom(sock.udp_socket, (void *)&info_ack_packet, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
+    sleep(1);
 
-
-    show_status(info_ack_packet.type);
+    return info_ack_packet;
 }
 
 
+/*--------------------------------------SEND & RECIEVE PACKETS UDP-----------------------------------*/
+
+void send_udp_package(struct config_info client, unsigned char type){
+    struct config_pdu_udp reg_str = client_to_pdu(client);
+    int bytes_send = 0;
+
+    reg_str.type = type;
+    bytes_send = sendto(sock.udp_socket,(void *)&reg_str,sizeof(reg_str), 0, (const struct sockaddr*)&sock.udp_addr, sizeof(sock.udp_addr));
+    if(bytes_send != 84){
+        printf("tamañ no coincideix\n");
+    }
+
+}
+
+struct config_pdu_udp recv_pck_udp(){
+    struct config_pdu_udp reg_server;
+    int a = 0;
+
+    a = recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
+    if(a < 0){
+        printf("No s'ha rebut cap paquet per UDP");
+        exit(1);
+    }
+    return reg_server;
+}
+
+
+
+
 struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, struct config_info user){
+    int i = 0;
+    int pos = 5;
+
     strcpy((char *)&tcp_package.id_transm, (const char*)&user.id);
     strcpy((char *)&tcp_package.dades[0], (const char*)&user.local_TCP);
     strcpy((char *)&tcp_package.dades[4], (const char*) ",");
-    int i = 0;
-    int pos = 5;
 
     while (strcmp((char *)&user.elements[i],"NULL") != 0 && i < 5){
         strcpy((char *)&tcp_package.dades[pos], (const char*)&user.elements[i]);
@@ -250,6 +280,34 @@ struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, stru
 }
 
 
+bool valid_tcp(struct config_pdu_udp tcp_pack){
+    printf("%lu", strlen((const char *)&tcp_pack.dades));
+
+    if(strlen((const char *)&tcp_pack.dades) == 5){
+        return true;
+    }else{
+        false;
+    }
+
+}
+
+/*--------------------------------------------ERROR CONTROLS & BOOLEANS-------------------*/
+
+bool valid_server(struct config_pdu_udp server_pack){
+
+    if(strcmp(inf_server.id_comm, server_pack.id_comm) && strcmp(inf_server.id_transm, server_pack.id_transm)){
+        return true;
+    }else{
+        return false;
+    }
+}
+void save_server_info(struct config_pdu_udp server_pck){
+    printf("entra");
+    strcpy(inf_server.id_transm, server_pck.id_transm);
+    strcpy(inf_server.id_comm, server_pck.id_comm);
+
+}
+/*------------------SENDA ALIVE PHASE----------------------------*/
 
 
 
@@ -258,14 +316,7 @@ struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, stru
 
 
 
-
-
-
-
-
-
-
-/*------------------FUNCIONS GENERALS----------------------------*/
+/*------------------GENERAL FUNCTIONS----------------------------*/
 
 struct config_pdu_udp client_to_pdu (struct config_info config){
 
