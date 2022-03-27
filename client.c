@@ -39,6 +39,9 @@
 #define WAIT_ACK_INFO 0xf4
 #define REGISTERED 0xf5
 #define SEND_ALIVE 0xf6
+#define ALIVE  0xb0
+#define ALIVE_NACK 0xb1
+#define ALIVE_REJ 0xb2
 
 /*+++++++++++++++++++++STRUCTS+++++++++++++++++++++*/
 struct config_info {
@@ -61,13 +64,16 @@ struct server_info {
     char id_transm[11];
     char id_comm[11];
     char ip[9];
+    unsigned char port[6];
 };
 
 struct socket_pck {
     int udp_socket;
+    int tcp_socket;
     struct sockaddr_in udp_addr;
+    struct sockaddr_in tcp_addr;
+    struct timeval udp_time_out;
 };
-
 
 //Variables globals
 int status = DISCONNECTED;
@@ -86,19 +92,22 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode);
 void register_client_connection (struct config_info client, int debugmode);
 void udp_socket(struct config_info client);
 struct config_pdu_udp client_to_pdu (struct config_info config);
+void save_server_info(struct config_pdu_udp server_pck);
 //send-recieve functions
 void send_udp_package(struct config_info client, unsigned char type);
-struct config_pdu_udp recv_pck_udp();
+struct config_pdu_udp recv_pck_udp(int time_out);
 //ack-reg phase
 struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user);
 struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, struct config_info user);
 //Prints
 void wait_reg_status(unsigned char status);
-//Error control
-bool valid_tcp_port(struct config_pdu_udp tcp_pack);
+//Error control & sleeps
 bool valid_server(struct config_pdu_udp server_pack);
+void wait_after_send_package(int package_order);
 
 /*+++++++++++++++++++++ALIVE-STATE-FUNCTIONS+++++++++++++++++++++*/
+void stay_alive(struct  config_info client_info);
+void tcp_socket(struct config_info client_info);
 
 int main(int argc, char *argv[]) {
 
@@ -112,6 +121,7 @@ int main(int argc, char *argv[]) {
     status = NOT_REGISTERED;
     register_client_connection(user, debug_status);
     //fase alive
+    stay_alive(user);
 
 }
 
@@ -133,7 +143,8 @@ void register_client_connection (struct config_info client, int debugmode){
 
             struct config_pdu_udp pck_recieved;
             send_udp_package(client,REG_REQ);
-            pck_recieved = recv_pck_udp();
+            pck_recieved = recv_pck_udp(T);
+            save_server_info(pck_recieved);
 
             if (pck_recieved.type == REG_ACK && status == WAIT_ACK_REG){
                 pck_recieved = wait_ack_reg_phase(REG_INFO, pck_recieved, client);
@@ -143,23 +154,25 @@ void register_client_connection (struct config_info client, int debugmode){
                 wait_reg_status(status);
             }
             if (pck_recieved.type == REG_REJ){
-                //status = NOT_REGISTERED;
-                //wait_reg_status(status);
-                //break;
+                status = NOT_REGISTERED;
+                wait_reg_status(status);
+                break;
             }
             if (pck_recieved.type == INFO_ACK && status == WAIT_ACK_INFO && valid_server(pck_recieved)){
                 status = REGISTERED;
                 wait_reg_status(status);
-                break;
+                return;
             }
-            if (pck_recieved.type == INFO_NACK && status == WAIT_ACK_INFO){
-
+            if (pck_recieved.type == INFO_NACK && status == WAIT_ACK_INFO && valid_server(pck_recieved)){
+                printf("Motiu de falla del registre: %s",pck_recieved.dades);
+                status = NOT_REGISTERED;
+                wait_reg_status(status);
             }else{
                 status = NOT_REGISTERED;
-                unfinished_register_try++;
             }
+            wait_after_send_package(i);
         }
-        sleep(2);
+
         unfinished_register_try++;
     }
 
@@ -221,8 +234,7 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_
 
     status = WAIT_ACK_INFO;
     wait_reg_status(status);
-    recvfrom(sock.udp_socket, (void *)&info_ack_packet, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
-    sleep(1);
+    info_ack_packet = recv_pck_udp(2*T);
 
     return info_ack_packet;
 }
@@ -242,16 +254,27 @@ void send_udp_package(struct config_info client, unsigned char type){
 
 }
 
-struct config_pdu_udp recv_pck_udp(){
+struct config_pdu_udp recv_pck_udp(int time_out){
     struct config_pdu_udp reg_server;
     int a = 0;
+    fd_set writefds;
 
-    a = recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
-    if(a < 0){
-        printf("No s'ha rebut cap paquet per UDP");
-        exit(1);
+    FD_ZERO(&writefds);
+    FD_SET(sock.udp_socket, &writefds);
+    sock.udp_time_out.tv_sec = time_out;
+
+
+    if(select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.udp_time_out ) > 0){
+        a = recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
+        if(a < 0){
+            printf("No s'ha rebut cap paquet per UDP");
+            exit(1);
+        }
+        return reg_server;
+
     }
-    return reg_server;
+
+
 }
 
 
@@ -280,36 +303,75 @@ struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, stru
 }
 
 
-bool valid_tcp(struct config_pdu_udp tcp_pack){
-    printf("%lu", strlen((const char *)&tcp_pack.dades));
-
-    if(strlen((const char *)&tcp_pack.dades) == 5){
-        return true;
-    }else{
-        false;
-    }
-
-}
-
 /*--------------------------------------------ERROR CONTROLS & BOOLEANS-------------------*/
 
 bool valid_server(struct config_pdu_udp server_pack){
 
-    if(strcmp(inf_server.id_comm, server_pack.id_comm) && strcmp(inf_server.id_transm, server_pack.id_transm)){
+    if(strcmp(inf_server.id_comm, server_pack.id_comm) == 0 && strcmp(inf_server.id_transm, server_pack.id_transm) == 0){
         return true;
     }else{
         return false;
     }
 }
 void save_server_info(struct config_pdu_udp server_pck){
-    printf("entra");
+
     strcpy(inf_server.id_transm, server_pck.id_transm);
     strcpy(inf_server.id_comm, server_pck.id_comm);
+    strcpy(inf_server.port, server_pck.dades);
+
+}
+
+void wait_after_send_package(int package_order){
+    if(package_order > P ){
+
+        if((T + (T *(package_order - 2))) < T * Q ){
+            printf("Segons esperant = %i \n", T + (T *(package_order - 2)) );
+            sleep(T + (T *(package_order - 2)) );
+        }else{
+            printf("Segons esperant = %i \n", Q * T );
+            sleep(Q * T);
+        }
+
+    } else{
+        sleep(T);
+        printf("Segons esperant = %i \n", T);
+    }
 
 }
 /*------------------SENDA ALIVE PHASE----------------------------*/
 
+void stay_alive(struct  config_info client_info){
+    tcp_socket(client_info);
+}
 
+void tcp_socket(struct config_info client_info){
+    struct hostent *ent;
+    ent = gethostbyname((char *)&client_info.server);
+
+    if(!ent){
+        printf("Server no trobat creant socket TCP\n");
+        exit(1);
+    }
+
+    sock.tcp_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if(sock.tcp_socket < 0){
+        printf("Error al crear Socket tcp \n");
+        exit(1);
+    }
+
+    memset(&sock.tcp_socket, 0, sizeof(struct sockaddr_in));
+    sock.tcp_addr.sin_family = AF_INET;
+    sock.tcp_addr.sin_addr.s_addr = (((struct in_addr *) ent -> h_addr_list[0] ) -> s_addr);
+    sock.tcp_addr.sin_port = htons(atoi("2973"));
+
+    printf("socket pdu :%i\nsocket:%i\nfamily: %hu\nip: %u\nport:%hu\n",sock.udp_socket,sock.tcp_socket, sock.tcp_addr.sin_family,sock.tcp_addr.sin_addr.s_addr,sock.tcp_addr.sin_port);
+
+    if(connect(sock.tcp_socket, (struct sockaddr *)&sock.tcp_addr, sizeof(sock.tcp_addr)) < 0){
+        printf("Error al connectar amb server via TCP\n");
+        exit(1);
+    }
+
+}
 
 
 
