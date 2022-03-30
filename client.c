@@ -7,7 +7,7 @@
 #include <netdb.h>
 #include <stdbool.h>
 #include <unistd.h>
-
+#include <threads.h>
 //Doc General Defines
 
 #define MAX_CHAR 51
@@ -17,6 +17,9 @@
 #define O 3
 #define P 2
 #define Q 4
+#define V 2
+#define R 2
+#define S 2
 
 
 //Packet_type
@@ -70,15 +73,12 @@ struct server_info {
 struct socket_pck {
     int udp_socket;
     int tcp_socket;
+    int tcp_port;
     struct sockaddr_in udp_addr;
     struct sockaddr_in tcp_addr;
     struct timeval udp_time_out;
 };
 
-//Variables globals
-int status = DISCONNECTED;
-struct socket_pck sock;
-struct server_info inf_server;
 
 /*+++++++++++++++++++++GLOBAL-FUNCTIONS+++++++++++++++++++++*/
 int check_debug_mode(int argc, char *argv[]);
@@ -94,7 +94,7 @@ void udp_socket(struct config_info client);
 struct config_pdu_udp client_to_pdu (struct config_info config);
 void save_server_info(struct config_pdu_udp server_pck);
 //send-recieve functions
-void send_udp_package(struct config_info client, unsigned char type);
+void send_udp_package(unsigned char type, struct config_pdu_udp packet_to_send);
 struct config_pdu_udp recv_pck_udp(int time_out);
 //ack-reg phase
 struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp tcp_pck, struct config_info user);
@@ -108,11 +108,24 @@ void wait_after_send_package(int package_order);
 /*+++++++++++++++++++++ALIVE-STATE-FUNCTIONS+++++++++++++++++++++*/
 void stay_alive(struct  config_info client_info);
 void tcp_socket(struct config_info client_info);
+void periodic_communication(struct config_info client);
+char *read_command();
+void command_treatment();
+
+
+
+//Variables globals
+int status = DISCONNECTED;
+struct socket_pck sock;
+struct server_info inf_server;
+struct sockaddr_in recieved_pack_addr;
+pthread_t tid = (pthread_t) NULL;
+struct config_info user;
 
 int main(int argc, char *argv[]) {
 
     int debug_status;
-    struct config_info user = read_config_files(argc, argv, debug_status);
+    user = read_config_files(argc, argv, debug_status);
 
     debug_status = check_debug_mode(argc,argv);
     printf("mode debug: %i \n",debug_status);
@@ -121,8 +134,8 @@ int main(int argc, char *argv[]) {
     status = NOT_REGISTERED;
     register_client_connection(user, debug_status);
     //fase alive
+    thrd_create(&tid, (thrd_start_t) command_treatment, 0);
     stay_alive(user);
-
 }
 
 
@@ -142,7 +155,7 @@ void register_client_connection (struct config_info client, int debugmode){
         for(int i = 0; i < N; i++) {
 
             struct config_pdu_udp pck_recieved;
-            send_udp_package(client,REG_REQ);
+            send_udp_package(REG_REQ, client_to_pdu(client));
             pck_recieved = recv_pck_udp(T);
             save_server_info(pck_recieved);
 
@@ -161,6 +174,7 @@ void register_client_connection (struct config_info client, int debugmode){
             if (pck_recieved.type == INFO_ACK && status == WAIT_ACK_INFO && valid_server(pck_recieved)){
                 status = REGISTERED;
                 wait_reg_status(status);
+                sock.tcp_port = atoi(pck_recieved.dades);
                 return;
             }
             if (pck_recieved.type == INFO_NACK && status == WAIT_ACK_INFO && valid_server(pck_recieved)){
@@ -172,9 +186,11 @@ void register_client_connection (struct config_info client, int debugmode){
             }
             wait_after_send_package(i);
         }
-
+        sleep(U);
         unfinished_register_try++;
     }
+    printf("CLIENT NOT REGISTERED \n");
+    exit(1);
 
 }
 /*-----------------------------------------SOCKETS & PACKETS STATES---------------------------*/
@@ -229,7 +245,7 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_
     addr_tcp_port.sin_port = htons(atoi((const char*)&server_port));
 
 
-    bytes_send = sendto(sock.udp_socket,(void *)&tcp_pck,sizeof(tcp_pck), 0, (const struct sockaddr*)&addr_tcp_port, sizeof(addr_tcp_port));
+    sendto(sock.udp_socket,(void *)&tcp_pck,sizeof(tcp_pck), 0, (const struct sockaddr*)&addr_tcp_port, sizeof(addr_tcp_port));
 
 
     status = WAIT_ACK_INFO;
@@ -242,11 +258,12 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_
 
 /*--------------------------------------SEND & RECIEVE PACKETS UDP-----------------------------------*/
 
-void send_udp_package(struct config_info client, unsigned char type){
-    struct config_pdu_udp reg_str = client_to_pdu(client);
+void send_udp_package(unsigned char type, struct config_pdu_udp packet_to_send){
+    struct config_pdu_udp reg_str = packet_to_send;
     int bytes_send = 0;
 
     reg_str.type = type;
+
     bytes_send = sendto(sock.udp_socket,(void *)&reg_str,sizeof(reg_str), 0, (const struct sockaddr*)&sock.udp_addr, sizeof(sock.udp_addr));
     if(bytes_send != 84){
         printf("tamañ no coincideix\n");
@@ -265,15 +282,11 @@ struct config_pdu_udp recv_pck_udp(int time_out){
 
 
     if(select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.udp_time_out ) > 0){
-        a = recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*) 0,(socklen_t *) 0);
-        if(a < 0){
-            printf("No s'ha rebut cap paquet per UDP");
-            exit(1);
-        }
-        return reg_server;
+
+        recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*)&recieved_pack_addr,(socklen_t *)&recieved_pack_addr);
 
     }
-
+    return reg_server;
 
 }
 
@@ -307,7 +320,7 @@ struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, stru
 
 bool valid_server(struct config_pdu_udp server_pack){
 
-    if(strcmp(inf_server.id_comm, server_pack.id_comm) == 0 && strcmp(inf_server.id_transm, server_pack.id_transm) == 0){
+    if(strcmp(inf_server.id_comm, server_pack.id_comm) == 0 && strcmp(inf_server.id_transm, server_pack.id_transm) == 0 && sock.udp_addr.sin_addr.s_addr == recieved_pack_addr.sin_addr.s_addr){
         return true;
     }else{
         return false;
@@ -325,25 +338,98 @@ void wait_after_send_package(int package_order){
     if(package_order > P ){
 
         if((T + (T *(package_order - 2))) < T * Q ){
-            printf("Segons esperant = %i \n", T + (T *(package_order - 2)) );
             sleep(T + (T *(package_order - 2)) );
         }else{
-            printf("Segons esperant = %i \n", Q * T );
             sleep(Q * T);
         }
 
     } else{
         sleep(T);
-        printf("Segons esperant = %i \n", T);
     }
 
 }
 /*------------------SENDA ALIVE PHASE----------------------------*/
 
 void stay_alive(struct  config_info client_info){
-    tcp_socket(client_info);
+    periodic_communication(client_info);
+}
+void periodic_communication(struct config_info client){
+
+    struct config_pdu_udp alive_packet;
+    int fake_alive_packets = 0;
+
+    alive_packet = client_to_pdu(client);
+    strcpy(alive_packet.id_comm, inf_server.id_comm);
+    bool first_packet_alive = true;
+
+        while(1){
+            struct config_pdu_udp recieved_packet;
+
+            send_udp_package(ALIVE, alive_packet);
+            recieved_packet = recv_pck_udp(R);
+
+            if(!valid_server(recieved_packet) || strcmp(recieved_packet.dades, (const char*)&client.id) != 0){
+                printf("paquets no valids: %i\n", fake_alive_packets);
+                if(first_packet_alive){
+                    status = NOT_REGISTERED;
+                    wait_reg_status(status);
+                    register_client_connection(client, 0);
+                }else if(fake_alive_packets == S){
+
+                    fake_alive_packets = 0;
+                    status = SEND_ALIVE;
+                    wait_reg_status(NOT_REGISTERED);
+                    register_client_connection(client, 0);
+                }else{
+                    fake_alive_packets++;
+                }
+            }
+            if(valid_server(recieved_packet) && strcmp(recieved_packet.dades, (const char*)&client.id) == 0 && recieved_packet.type == ALIVE && first_packet_alive){
+                printf("primer ALIVE rebut\n");
+                first_packet_alive = false;
+                status = SEND_ALIVE;
+                wait_reg_status(status);
+                tcp_socket(client);
+            }
+            sleep(V);
+        }
+
 }
 
+void command_treatment(){
+
+    while(1){
+        if(strcmp(read_command(), "status") == 0){
+            print_start_status(user);
+        }
+        if(strcmp(read_command(), "send") == 0){
+            printf("hola");
+        }
+        if(strcmp(read_command(), "status") == 0){
+            printf("hola");
+        }
+    }
+}
+
+
+char *read_command() {
+
+    char *command = malloc(MAX_CHAR);
+    char buffer[MAX_CHAR];
+
+    if (fgets(buffer, MAX_CHAR, stdin) != NULL) {
+        buffer[strcspn(buffer, "\n")] = '\0';
+    }
+    strcpy(command, buffer);
+    return command;
+}
+
+
+
+
+
+
+/*-----------------------------------------------------------TCP????----------------------------------*/
 void tcp_socket(struct config_info client_info){
     struct hostent *ent;
     ent = gethostbyname((char *)&client_info.server);
@@ -359,12 +445,12 @@ void tcp_socket(struct config_info client_info){
         exit(1);
     }
 
-    memset(&sock.tcp_socket, 0, sizeof(struct sockaddr_in));
+    memset(&sock.tcp_addr, 0, sizeof(struct sockaddr_in));
     sock.tcp_addr.sin_family = AF_INET;
-    sock.tcp_addr.sin_addr.s_addr = (((struct in_addr *) ent -> h_addr_list[0] ) -> s_addr);
-    sock.tcp_addr.sin_port = htons(atoi("2973"));
+    sock.tcp_addr.sin_addr.s_addr = (((struct in_addr *) ent->h_addr_list[0])->s_addr);
+    sock.tcp_addr.sin_port = htons(sock.tcp_port);
 
-    printf("socket pdu :%i\nsocket:%i\nfamily: %hu\nip: %u\nport:%hu\n",sock.udp_socket,sock.tcp_socket, sock.tcp_addr.sin_family,sock.tcp_addr.sin_addr.s_addr,sock.tcp_addr.sin_port);
+    //printf("socket pdu :%i\nsocket:%i\nfamily: %hu\nip: %u\nport:%hu\n",sock.udp_socket,sock.tcp_socket, sock.tcp_addr.sin_family,sock.tcp_addr.sin_addr.s_addr,sock.tcp_addr.sin_port);
 
     if(connect(sock.tcp_socket, (struct sockaddr *)&sock.tcp_addr, sizeof(sock.tcp_addr)) < 0){
         printf("Error al connectar amb server via TCP\n");
@@ -482,7 +568,7 @@ char *get_configname(int argc, char *argv[]){
 void print_start_status(struct config_info info) {
     printf("********************* DADES DISPOSITIU ***********************\n");
     printf("Identificador: %s\n", info.id);
-    printf("Estat: DISCONNECTED\n\n");
+    show_status(status);
     printf(" Param      valor\n");
     printf(" -----      --------\n");
     int i = 0;
@@ -540,6 +626,18 @@ void show_status(unsigned char state) {
             break;
         case 0xa7:
             printf("INFO_REJ\n");
+            break;
+        case SEND_ALIVE:
+            printf("SEND_ALIVE\n");
+            break;
+        case ALIVE:
+            printf("ALIVE\n");
+            break;
+        case ALIVE_NACK:
+            printf("ALIVE_NACK\n");
+            break;
+        case ALIVE_REJ:
+            printf("ALIVE_REJ\n");
             break;
     }
 }
