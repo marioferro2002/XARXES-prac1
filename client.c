@@ -50,6 +50,7 @@
 struct config_info {
     unsigned char id[11];
     unsigned char elements[6][8];
+    unsigned char valor_elements[6][16];
     unsigned char local_TCP[6];
     unsigned char server[13];
     unsigned char server_udp[6];
@@ -111,6 +112,9 @@ void tcp_socket(struct config_info client_info);
 void periodic_communication(struct config_info client);
 char *read_command();
 void command_treatment();
+bool validate_alive(struct config_pdu_udp recieved_packet);
+void set_element_(char *buffer);
+
 
 
 
@@ -271,7 +275,7 @@ void send_udp_package(unsigned char type, struct config_pdu_udp packet_to_send){
 
 }
 
-struct config_pdu_udp recv_pck_udp(int time_out){
+struct config_pdu_udp recv_pck_udp(int time_out) {
     struct config_pdu_udp reg_server;
     int a = 0;
     fd_set writefds;
@@ -281,18 +285,15 @@ struct config_pdu_udp recv_pck_udp(int time_out){
     sock.udp_time_out.tv_sec = time_out;
 
 
-    if(select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.udp_time_out ) > 0){
+    if (select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.udp_time_out) > 0) {
 
-        recvfrom(sock.udp_socket, (void *)&reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr*)&recieved_pack_addr,(socklen_t *)&recieved_pack_addr);
+        recvfrom(sock.udp_socket, (void *) &reg_server, sizeof(struct config_pdu_udp), 0,
+                 (struct sockaddr *) &recieved_pack_addr, (socklen_t *) &recieved_pack_addr);
 
     }
     return reg_server;
 
 }
-
-
-
-
 struct config_pdu_udp ack_reg_packmaker (struct config_pdu_udp tcp_package, struct config_info user){
     int i = 0;
     int pos = 5;
@@ -364,27 +365,26 @@ void periodic_communication(struct config_info client){
 
         while(1){
             struct config_pdu_udp recieved_packet;
-
+            strcpy(alive_packet.id_comm, inf_server.id_comm);
             send_udp_package(ALIVE, alive_packet);
             recieved_packet = recv_pck_udp(R);
 
-            if(!valid_server(recieved_packet) || strcmp(recieved_packet.dades, (const char*)&client.id) != 0){
-                printf("paquets no valids: %i\n", fake_alive_packets);
+            if(!validate_alive(recieved_packet)){
+                printf("paquets no valids: %i\n", fake_alive_packets + 1);
                 if(first_packet_alive){
                     status = NOT_REGISTERED;
                     wait_reg_status(status);
                     register_client_connection(client, 0);
                 }else if(fake_alive_packets == S){
-
                     fake_alive_packets = 0;
-                    status = SEND_ALIVE;
-                    wait_reg_status(NOT_REGISTERED);
+                    status = NOT_REGISTERED;
+                    wait_reg_status(status);
                     register_client_connection(client, 0);
                 }else{
                     fake_alive_packets++;
                 }
             }
-            if(valid_server(recieved_packet) && strcmp(recieved_packet.dades, (const char*)&client.id) == 0 && recieved_packet.type == ALIVE && first_packet_alive){
+            if(validate_alive(recieved_packet) && first_packet_alive){
                 printf("primer ALIVE rebut\n");
                 first_packet_alive = false;
                 status = SEND_ALIVE;
@@ -399,14 +399,15 @@ void periodic_communication(struct config_info client){
 void command_treatment(){
 
     while(1){
-        if(strcmp(read_command(), "status") == 0){
+        char *command = read_command();
+        if(strstr(command, "status") == command){
             print_start_status(user);
-        }
-        if(strcmp(read_command(), "send") == 0){
-            printf("hola");
-        }
-        if(strcmp(read_command(), "status") == 0){
-            printf("hola");
+        }else if(strstr(command, "set") == command){
+            set_element_(command);
+        }else if(strstr(command, "send") == command){
+            printf("send\n");
+        }else{
+            printf("hello");
         }
     }
 }
@@ -423,6 +424,60 @@ char *read_command() {
     strcpy(command, buffer);
     return command;
 }
+bool validate_alive(struct config_pdu_udp recieved_packet){
+
+    if (valid_server(recieved_packet) && strcmp(recieved_packet.dades, (const char*)&user.id) == 0 && recieved_packet.type == ALIVE){
+        return  true;
+    } else{
+        show_status(ALIVE);
+        printf("%s\n",recieved_packet.dades);
+        return false;
+    }
+}
+
+
+void set_element_(char *buffer){
+    char *cpy_token, *element;
+    char element_value[16];
+
+
+    buffer[strlen(buffer) - 1] = '\0';
+    //Obtain element
+    cpy_token = strtok(buffer, " ");
+    cpy_token = strtok(NULL, " ");
+    if(cpy_token == NULL){
+        printf("Us comanda: set <identificador_element> <nou_valor> \n");
+        return;
+    }
+    element = cpy_token;
+
+    //Obtain value
+    cpy_token = strtok(NULL, " ");
+    if(cpy_token == NULL){
+        printf("Us comanda: set <identificador_element> <nou_valor> \n");
+        return;
+    }
+    strncpy(element_value,cpy_token,16);
+    printf("%s\n", element_value);
+    printf("%s\n", element);
+
+    for(int i = 0; i < 6;i++){
+
+        if(strcmp((const char *)&user.elements[i], element) == 0){
+            printf("entra\n");
+            strcpy((char *)&user.valor_elements[i], element_value);
+            printf("%s", user.valor_elements[i]);
+            return;
+        }
+
+    }
+    printf("Element no trobat \n");
+}
+
+
+
+
+
 
 
 
@@ -449,8 +504,6 @@ void tcp_socket(struct config_info client_info){
     sock.tcp_addr.sin_family = AF_INET;
     sock.tcp_addr.sin_addr.s_addr = (((struct in_addr *) ent->h_addr_list[0])->s_addr);
     sock.tcp_addr.sin_port = htons(sock.tcp_port);
-
-    //printf("socket pdu :%i\nsocket:%i\nfamily: %hu\nip: %u\nport:%hu\n",sock.udp_socket,sock.tcp_socket, sock.tcp_addr.sin_family,sock.tcp_addr.sin_addr.s_addr,sock.tcp_addr.sin_port);
 
     if(connect(sock.tcp_socket, (struct sockaddr *)&sock.tcp_addr, sizeof(sock.tcp_addr)) < 0){
         printf("Error al connectar amb server via TCP\n");
@@ -574,7 +627,7 @@ void print_start_status(struct config_info info) {
     int i = 0;
 
    while(strcmp((char *)info.elements[i],"NULL") != 0){
-           printf("%s       None\n", info.elements[i]);
+           printf("%s       %s\n", info.elements[i],info.valor_elements[i]);
        i++;
    }
     printf("***************************************************************\n");
