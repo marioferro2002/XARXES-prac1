@@ -43,9 +43,6 @@
 #define SET_DATA 0xc4
 #define GET_DATA 0xc5
 
-
-
-
 //Client-server state
 
 #define DISCONNECTED 0xf0
@@ -88,6 +85,7 @@ struct socket_pck {
     int tcp_socket;
     int tcp_socket_recv;
     int tcp_port;
+    int connection_fd;
     struct sockaddr_in udp_addr;
     struct sockaddr_in tcp_addr;
     struct sockaddr_in tcp_addr_recv;
@@ -130,7 +128,7 @@ void receive_tcp_pck_from_server(int time_out, int socket);
 struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_udp reg_ack_pack);
 struct config_pdu_udp reg_ack_send_package_maker (struct config_pdu_udp tcp_package);
 void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package);
-struct pdu_tcp_pack setup_tcp_package(int element_value, char type);
+struct pdu_tcp_pack setup_tcp_package(int element_value, int type);
 struct config_pdu_udp client_to_pdu ();
 void save_server_info_udp(struct config_pdu_udp server_pck);
 
@@ -158,20 +156,23 @@ int get_element(char *element);
 
 //Variables globals
 int status = DISCONNECTED;
+int fake_alive_packets = 0;
+int debug_mode = 0;
+
 struct socket_pck sock;
 struct server_info inf_server;
 struct sockaddr_in recieved_pack_addr;
-thrd_t command = (thrd_t) NULL;
 struct config_info user;
-int fake_alive_packets = 0;
+
+thrd_t command = (thrd_t) NULL;
 bool first_packet_alive = true;
 
 int main(int argc, char *argv[]) {
 
-    int debug_status;
-    user = read_config_files(argc, argv, debug_status);
+    user = read_config_files(argc, argv, debug_mode);
 
-    debug_status = check_debug_mode(argc,argv);
+    debug_mode = check_debug_mode(argc,argv);
+
     print_start_status();
     //fase register
     status = NOT_REGISTERED;
@@ -226,7 +227,6 @@ void register_client_connection (){
                 status_change_message(status);
             }else{
                 status = NOT_REGISTERED;
-                printf("Paquet invalid de tipus: \n");
                 show_status(pck_recieved.type);
             }
 
@@ -255,11 +255,15 @@ void send_udp_package(unsigned char type, struct config_pdu_udp packet_to_send){
         printf("tamañ no coincideix\n");
     }
 
+    if(debug_mode == 1){
+        printf("Paquet UDP enviat\n");
+    }
+
 }
 
 struct config_pdu_udp recv_pck_udp(int time_out) {
     struct config_pdu_udp reg_server;
-    int a = 0;
+    int recv_addr_size = sizeof(recieved_pack_addr);
     fd_set writefds;
 
     FD_ZERO(&writefds);
@@ -268,9 +272,8 @@ struct config_pdu_udp recv_pck_udp(int time_out) {
 
 
     if (select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.recv_timeout) > 0) {
-
-        recvfrom(sock.udp_socket, (void *) &reg_server, sizeof(struct config_pdu_udp), 0,(struct sockaddr *)&recieved_pack_addr, (socklen_t *)&recieved_pack_addr);
-
+        recvfrom(sock.udp_socket, (void *) &reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr *)&recieved_pack_addr,
+                 (socklen_t *)&recv_addr_size);
     }
     return reg_server;
 
@@ -321,12 +324,11 @@ void periodic_communication(struct config_info client){
 
     alive_packet = client_to_pdu();
     strcpy(alive_packet.id_comm, inf_server.id_comm);
-    int i = 0;
 
 
         while(1){
             struct config_pdu_udp recieved_packet_alive;
-            struct pdu_tcp_pack recieved_package;
+
             strcpy(alive_packet.id_comm, inf_server.id_comm);
             send_udp_package(ALIVE, alive_packet);
             recieved_packet_alive = recv_pck_udp(R);
@@ -441,7 +443,7 @@ void tcp_socket(){
 }
 
 void tcp_socket_recv(){
-    int ssock_cli, connection;
+    int ssock_cli;
     struct sockaddr_in client_tcp, server_addr;
 
     sock.tcp_socket_recv = socket(AF_INET, SOCK_STREAM, 0);
@@ -468,16 +470,12 @@ void tcp_socket_recv(){
 
     while (1){
         ssock_cli = sizeof(server_addr);
-        connection = accept(sock.tcp_socket_recv, (struct sockaddr*)&server_addr, &ssock_cli);
+        sock.connection_fd = accept(sock.tcp_socket_recv, (struct sockaddr*)&server_addr, (socklen_t *)&ssock_cli);
 
-        if(connection > 0){
-            struct pdu_tcp_pack recv_pck;
-            receive_tcp_pck_from_server(3, connection);
-            printf("entra \n");
+        if(sock.connection_fd > 0){
+            receive_tcp_pck_from_server(3, sock.connection_fd);
         }
-
     }
-
 }
 
 
@@ -513,7 +511,7 @@ struct config_pdu_udp reg_ack_send_package_maker(struct config_pdu_udp tcp_packa
     return tcp_package;
 }
 
-struct pdu_tcp_pack setup_tcp_package(int element_value, char type){
+struct pdu_tcp_pack setup_tcp_package(int element_value, int type){
 
     struct  pdu_tcp_pack send_package;
 
@@ -546,21 +544,49 @@ struct pdu_tcp_pack setup_tcp_package(int element_value, char type){
 }
 
 void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package){
-
+    struct pdu_tcp_pack send_package;
+    int n_element = get_element(recieved_package.element);
 
     if(data_ack_validate(recieved_package)){
-        printf("Element: %s actualitzat \n",recieved_package.element);
+        printf("Element: %s actualitzat al servidor \n",recieved_package.element);
         return;
-    }else if(valid_server_tcp_comms(recieved_package) && recieved_package.type == DATA_NACK){
-        printf("Element: %s no s'ha actualitzat \n",recieved_package.element);
+    }
+
+    if(valid_server_tcp_comms(recieved_package) && recieved_package.type == DATA_NACK){
+        printf("Element: %s no s'ha actualitzat al servidor \n",recieved_package.element);
         return;
-    }else if(valid_server_tcp_comms(recieved_package) && recieved_package.type == SET_DATA){
-        printf("rebut set data \n");
-        return;
-    }else if(valid_server_tcp_comms(recieved_package) && recieved_package.type == GET_DATA){
-        printf("rebut get data \n");
+    }
+
+    if(valid_server_tcp_comms(recieved_package) && recieved_package.type == SET_DATA){
+        if(n_element < 6 && user.elements[n_element][6] == 'I'){
+            strcpy((char *)&user.valor_elements[n_element], recieved_package.valor);
+            send_package = setup_tcp_package(n_element,DATA_ACK);
+            send_package_via_tcp_to_server(send_package, sock.connection_fd);
+        }else{
+            send_package = setup_tcp_package(n_element,DATA_NACK);
+            strcpy(send_package.valor, recieved_package.valor);
+            strcpy(send_package.info, "Element invalid o no es d'entrada\n");
+            send_package_via_tcp_to_server(send_package, sock.connection_fd);
+        }
+       return;
+    }
+
+    if(valid_server_tcp_comms(recieved_package) && recieved_package.type == GET_DATA){
+
+        if(n_element < 6){
+            send_package = setup_tcp_package(n_element, DATA_ACK);
+            send_package_via_tcp_to_server(send_package, sock.connection_fd);
+        }
         return;
     }else{
+
+        if(recieved_package.type == GET_DATA || recieved_package.type == SET_DATA){
+            send_package = setup_tcp_package(n_element, DATA_REJ);
+            strcpy(send_package.valor, recieved_package.valor);
+            strcpy(send_package.info, "Error en les dades d'identificacio\n");
+            send_package_via_tcp_to_server(send_package, sock.connection_fd);
+        }
+
         printf("Paquet TCP incorrecte, tornant a l'estat:");
         status = NOT_REGISTERED;
         show_status(status);
@@ -573,7 +599,6 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_
 
     struct sockaddr_in addr_tcp_port = sock.udp_addr;
     unsigned char server_port[6];
-    int bytes_send = 0;
     struct config_pdu_udp info_ack_packet;
 
     reg_ack_pack.type = REG_INFO;
@@ -605,12 +630,11 @@ bool valid_server_udp_comms(struct config_pdu_udp server_pack){
 }
 
 bool valid_server_tcp_comms(struct pdu_tcp_pack server_pack){
+    return strcmp(inf_server.id_comm, server_pack.id_comm) == 0 &&
+    strcmp(inf_server.id_transm, server_pack.id_transm) == 0 &&
+    sock.udp_addr.sin_addr.s_addr == recieved_pack_addr.sin_addr.s_addr &&
+    strcmp(server_pack.info, (const char *)&user.id) == 0;
 
-    if(strcmp(inf_server.id_comm, server_pack.id_comm) == 0 && strcmp(inf_server.id_transm, server_pack.id_transm) == 0 && sock.udp_addr.sin_addr.s_addr == recieved_pack_addr.sin_addr.s_addr){
-        return true;
-    }else{
-        return false;
-    }
 }
 
 void save_server_info_udp(struct config_pdu_udp server_pck){
@@ -737,7 +761,11 @@ int check_debug_mode(int argc,char *argv[]){
 char *get_configname(int argc, char *argv[]){
     for(int i = 1; i < argc;i++){
         if(strcmp(argv[i], "-c") == 0){
-            return argv[i+1];
+            if(argv[i+1] != NULL){
+                return argv[i+1];
+            }
+            printf("Client no valid, lleguirem el client per defecte..\n");
+            break;
         }
     }
     return "client.cfg";
@@ -833,6 +861,7 @@ void status_change_message(unsigned char state){
     int h, m, s;
     time_t time_now = time(NULL);
     struct tm *tm_struct = localtime(&time_now);
+
     h = tm_struct -> tm_hour;
     m = tm_struct -> tm_min;
     s = tm_struct -> tm_sec;
@@ -842,7 +871,6 @@ void status_change_message(unsigned char state){
 
 }
 
-//Command-phase
 void command_treatment(){
 
     while(1){
@@ -866,10 +894,9 @@ void command_treatment(){
 
                 if(i < 6){
                     struct pdu_tcp_pack send_package;
-                    struct pdu_tcp_pack recieved_package;
 
                     tcp_socket();
-                    send_package = setup_tcp_package(i, SEND_DATA);
+                    send_package = setup_tcp_package(i,SEND_DATA);
                     send_package_via_tcp_to_server(send_package, sock.tcp_socket);
                     receive_tcp_pck_from_server(M, sock.tcp_socket);
 
@@ -878,6 +905,12 @@ void command_treatment(){
                     printf("Element: %s no existeix \n", element);
                 }
             }
+        }else if(strstr(command, "quit") == command && status == SEND_ALIVE){
+            printf("Tancant client......\n");
+            close(sock.tcp_socket);
+            close(sock.udp_socket);
+            close(sock.connection_fd);
+            exit(1);
         }else{
             printf("Comanda no reconeguda \n");
         }
@@ -885,7 +918,6 @@ void command_treatment(){
 }
 
 char *read_command() {
-
     char *command = malloc(MAX_CHAR);
     char buffer[MAX_CHAR];
 
@@ -901,7 +933,7 @@ void set_element(char *buffer){
     char element_value[16];
 
 
-    buffer[strlen(buffer) - 1] = '\0';
+
     //Obtain element
     cpy_token = strtok(buffer, " ");
     cpy_token = strtok(NULL, " ");
@@ -917,6 +949,7 @@ void set_element(char *buffer){
         printf("Us comanda: set <identificador_element> <nou_valor> \n");
         return;
     }
+    printf("%s\n", cpy_token);
     strncpy(element_value,cpy_token,16);
 
 
