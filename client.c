@@ -143,7 +143,7 @@ bool data_ack_validate(struct  pdu_tcp_pack recieved_package);
 void status_change_message(unsigned char state);
 int check_debug_mode(int argc, char *argv[]);
 void print_start_status();
-void show_status(unsigned char state);
+char *show_status(unsigned char state);
 char *get_configname(int argc, char *argv[]);
 struct config_info read_config_files(int argc, char *argv[], int debug_mode);
 char *read_command();
@@ -227,7 +227,7 @@ void register_client_connection (){
                 status_change_message(status);
             }else{
                 status = NOT_REGISTERED;
-                show_status(pck_recieved.type);
+                status_change_message(NOT_REGISTERED);
             }
 
             wait_after_send_package(i);
@@ -256,7 +256,7 @@ void send_udp_package(unsigned char type, struct config_pdu_udp packet_to_send){
     }
 
     if(debug_mode == 1){
-        printf("Paquet UDP enviat\n");
+        printf("UDP Packet Send -> Type : %s Id_trans: %s Id_comm: %s Dades: %s \n", show_status(reg_str.type), reg_str.id_transm, reg_str.id_comm, reg_str.dades);
     }
 
 }
@@ -272,11 +272,14 @@ struct config_pdu_udp recv_pck_udp(int time_out) {
 
 
     if (select(sock.udp_socket + 1, &writefds, NULL, NULL, &sock.recv_timeout) > 0) {
-        recvfrom(sock.udp_socket, (void *) &reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr *)&recieved_pack_addr,
+        recvfrom(sock.udp_socket, &reg_server, sizeof(struct config_pdu_udp), 0, (struct sockaddr *)&recieved_pack_addr,
                  (socklen_t *)&recv_addr_size);
+        if(debug_mode == 1){
+            printf("UDP Packet Recv ->Type: %s Id_trans: %s Id_comm: %s Dades: %s \n", show_status(reg_server.type), reg_server.id_transm, reg_server.id_comm, reg_server.dades);
+        }
     }
-    return reg_server;
 
+    return reg_server;
 }
 
 //TCP
@@ -589,7 +592,6 @@ void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package){
 
         printf("Paquet TCP incorrecte, tornant a l'estat:");
         status = NOT_REGISTERED;
-        show_status(status);
         return;
     }
 
@@ -604,13 +606,17 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct  config_pdu_
     reg_ack_pack.type = REG_INFO;
 
     //Creem copia de la adreça i canviem port
+    printf("Port udp nou %s\n", reg_ack_pack.dades);
     strcpy((char *)server_port, reg_ack_pack.dades);
     reg_ack_pack = reg_ack_send_package_maker(reg_ack_pack);
     addr_tcp_port.sin_port = htons(atoi((const char*)&server_port));
 
 
     sendto(sock.udp_socket, (void *)&reg_ack_pack, sizeof(reg_ack_pack), 0, (const struct sockaddr*)&addr_tcp_port, sizeof(addr_tcp_port));
-
+    if(debug_mode ==1){
+        printf("UDP Packet Send ->Type: %s Id_trans: %s Id_comm: %s Dades: %s \n",
+               show_status(reg_ack_pack.type), reg_ack_pack.id_transm, reg_ack_pack.id_comm, reg_ack_pack.dades);
+    }
     status = WAIT_ACK_INFO;
     status_change_message(status);
     info_ack_packet = recv_pck_udp(2*T);
@@ -752,9 +758,11 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) {
 int check_debug_mode(int argc,char *argv[]){
     for(int i = 1; i < argc;i++){
         if(strcmp(argv[i], "-d") == 0){
+            printf("DEBUG_MODE = ON \n");
             return 1;
         }
     }
+    printf("DEBUG_MODE = OFF\n");
     return 0;
 }
 
@@ -774,7 +782,7 @@ char *get_configname(int argc, char *argv[]){
 void print_start_status() {
     printf("********************* DADES DISPOSITIU ***********************\n");
     printf("Identificador: %s\n", user.id);
-    show_status(status);
+    printf("Estat: %s \n", show_status(status));
     printf(" Param      valor\n");
     printf(" -----      --------\n");
     int i = 0;
@@ -788,71 +796,71 @@ void print_start_status() {
 
 }
 
-void show_status(unsigned char state) {
+char *show_status(unsigned char state) {
 
     switch(state){
         case 0xf0:
-            printf("DISCONNECTED\n");
+            return "DISCONNECTED";
             break;
         case 0xf1:
-            printf("NOT_REGISTERED\n");
+            return "NOT_REGISTERED";
             break;
         case 0xf2:
-            printf("WAIT_ACK_REG\n");
+            return "WAIT_ACK_REG";
             break;
         case 0xf3:
-            printf("WAIT_INFO\n");
+            return "WAIT_INFO";
             break;
         case 0xf4:
-            printf("WAIT_ACK_INFO\n");
+            return "WAIT_ACK_INFO";
             break;
         case 0xf5:
-            printf("REGISTERED\n");
+            return "REGISTERED";
             break;
         case 0xa0:
-            printf("REG_REQ \n");
+            return "REG_REQ";
             break;
         case 0xa1:
-            printf("REG_ACK \n");
+            return "REG_ACK";
             break;
         case 0xa2:
-            printf("REG_NACK \n");
+            return "REG_NACK";
             break;
         case 0xa3:
-            printf("REG_REJ\n");
+            return "REG_REJ";
             break;
         case 0xa4:
-            printf("REG_INFO\n");
+            return "REG_INFO";
             break;
         case 0xa5:
-            printf("INFO_ACK\n");
+            return "INFO_ACK";
             break;
         case 0xa6:
-            printf("INFO_NACK\n");
+            return "INFO_NACK";
             break;
         case 0xa7:
-            printf("INFO_REJ\n");
+            return "INFO_REJ";
             break;
         case SEND_ALIVE:
-            printf("SEND_ALIVE\n");
+            return "SEND_ALIVE";
             break;
         case ALIVE:
-            printf("ALIVE\n");
+            return "ALIVE";
             break;
         case ALIVE_NACK:
-            printf("ALIVE_NACK\n");
+            return "ALIVE_NACK";
             break;
         case ALIVE_REJ:
-            printf("ALIVE_REJ\n");
+            return "ALIVE_REJ";
             break;
         case DATA_ACK:
-            printf("DATA_ACK\n");
+            return "DATA_ACK";
             break;
         case DATA_NACK:
-            printf("DATA_NACK\n");
+            return "DATA_NACK";
             break;
         case DATA_REJ:
-            printf("DATA_REJ\n");
+            return "DATA_REJ";
             break;
     }
 }
@@ -866,8 +874,8 @@ void status_change_message(unsigned char state){
     m = tm_struct -> tm_min;
     s = tm_struct -> tm_sec;
 
-    printf("%i:%i:%i MSG: Dispositiu passa a l'estat: ", h, m, s);
-    show_status(state);
+    printf("%i:%i:%i MSG: Dispositiu passa a l'estat: %s \n", h, m, s, show_status(state));
+
 
 }
 
