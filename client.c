@@ -158,6 +158,7 @@ int get_element(char *element);
 int status = DISCONNECTED;
 int fake_alive_packets = 0;
 int debug_mode = 0;
+int unfinished_register_try = 0;
 
 struct socket_pck sock;
 struct server_info inf_server;
@@ -188,17 +189,20 @@ int main(int argc, char *argv[]) {
 void register_client_connection (){
 
     udp_socket(user);
-    int unfinished_register_try = 0;
 
     while (unfinished_register_try < O && status != REGISTERED){
         printf("Intent de registre: %i \n", unfinished_register_try + 1);
+        status = NOT_REGISTERED;
         status_change_message(status);
 
         for(int i = 0; i < N; i++) {
 
             struct config_pdu_udp pck_recieved;
-            status = WAIT_ACK_REG;
-            status_change_message(status);
+            if (status != WAIT_ACK_REG){
+                status = WAIT_ACK_REG;
+                status_change_message(status);
+            }
+
             send_udp_package(REG_REQ, client_to_pdu());
             pck_recieved = recv_pck_udp(T);
 
@@ -225,9 +229,11 @@ void register_client_connection (){
                 printf("Motiu de falla del registre: %s\n",pck_recieved.dades);
                 status = NOT_REGISTERED;
                 status_change_message(status);
-            }else{
+            }else if (status == WAIT_ACK_INFO){
+                printf("INFO_ACK no rebut \n");
                 status = NOT_REGISTERED;
                 status_change_message(NOT_REGISTERED);
+                break;
             }
 
             wait_after_send_package(i);
@@ -286,7 +292,10 @@ struct config_pdu_udp recv_pck_udp(int time_out) {
 void send_package_via_tcp_to_server(struct pdu_tcp_pack send_pck, int socket) {
     if (write(socket, &send_pck, sizeof(send_pck)) == -1) {
         printf("Error al enviar paquet via TCP");
-
+    }
+    if(debug_mode == 1){
+        printf("TCP Packet S -> Type : %s Id_trans: %s Id_comm: %s Element: %s Valor: %s Info: %s  \n",
+               show_status(send_pck.type), send_pck.id_transm, send_pck.id_comm, send_pck.element, send_pck.valor, send_pck.info);
     }
 }
 
@@ -302,6 +311,10 @@ void receive_tcp_pck_from_server(int time_out, int socket){
 
     if (select(socket + 1, &writefds, NULL, NULL, &sock.recv_timeout) > 0){
         recv(socket, &recieved_pack, sizeof(recieved_pack), 0);
+        if(debug_mode == 1){
+            printf("TCP Packet S -> Type : %s Id_trans: %s Id_comm: %s Element: %s Valor: %s Info: %s  \n",
+                   show_status(recieved_pack.type), recieved_pack.id_transm, recieved_pack.id_comm, recieved_pack.element, recieved_pack.valor, recieved_pack.info);
+        }
         received_tcp_package_treatment(recieved_pack);
     }else{
         status = NOT_REGISTERED;
@@ -359,6 +372,7 @@ void periodic_communication(struct config_info client){
                 first_packet_alive = true;
                 fake_alive_packets = 0;
                 status_change_message(status);
+                unfinished_register_try++;
                 register_client_connection();
             }
             sleep(V);

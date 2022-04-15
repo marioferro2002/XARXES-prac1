@@ -56,12 +56,16 @@ class Clients:
         self.id = None
         self.ip = None
         self.id_comm = None
-        self.elements = None
+        self.all_elements = None
+        self.element_and_value = [[]]
         self.status = None
         self.udp_port = None
         self.tcp_port = None
         self.udp_socket = None
         self.consecutive_alive = 0
+        self.receive_alive = False
+        self.first_alive_recv = False
+
 
 class Socket:
     def __init__(self):
@@ -72,6 +76,7 @@ class Socket:
 
 # GLobal Functions
 allowed_client = []
+clients_data_lock = threading.Lock()
 debug_mode = False
 sock = Socket()
 server_inf = Server()
@@ -86,13 +91,17 @@ def udp_socket():
     sock.udp_socket.bind(("", server_inf.port_UDP))
 
 
-def client_udp_socket(client, udp_port):
+def client_udp_socket(client):
     global server_inf
     client.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    client.udp_socket.bind(("", udp_port))
+    client.udp_socket.bind(("", 0))
+    ip, port = client.udp_socket.getsockname()
 
     if (debug_mode == True):
-        print("Port UDP :", udp_port, "obert al client:", client.id)
+        print_message("Port UDP : " + str(port) + " obert al client: " + client.id)
+
+
+    return port
 
 
 def tcp_socket():
@@ -105,31 +114,35 @@ def tcp_socket():
 
 
 # -----------------------------REGISTER && ALIVE FUNCTIONS------------------------------------------#
-
-def register_loop():
+def udp_loop():
     global sock
     while (1):
         try:
             sock.udp_socket.settimeout(2)
             recieved_pck_udp, client_ip, client_port = recieve_udp_packet(84, sock.udp_socket)
-            pack_type = recieved_pck_udp[0]
-            if pack_type == REG_REQ:
-                register_reg(recieved_pck_udp, client_ip, client_port)
-            if pack_type == ALIVE:
-                alive_phase(recieved_pck_udp)
+            pack_ack = threading.Thread(target=register_loop, args=(recieved_pck_udp, client_ip, client_port))
+            pack_ack.start()
         except socket.error as socketerror:
             error = "ignore"
 
 
+def register_loop(recieved_pck_udp, client_ip, client_port):
+    pack_type = recieved_pck_udp[0]
+    if pack_type == REG_REQ:
+        register_reg(recieved_pck_udp, client_ip, client_port)
+    if pack_type == ALIVE:
+        alive_phase(recieved_pck_udp)
+
+
 def register_reg(received_package, client_ip, client_udp_port):
+    global sock
     client_id_transm = received_package[1].decode().split("\x00")[0]
     client_id_comm = received_package[2].decode().split("\x00")[0]
 
     if not client_id_and_id_comm_valid(client_id_transm, client_id_comm):
-        print_message("ERROR -> Paquet del client: " + client_id_transm + " no valid")
+        print_message("ERROR -> Paquet del client: " + client_id_transm + " no valid, enviant REG_REJ....")
         send_pck = reg_rej_pack_maker("Dades incorrectes")
         sock.udp_socket.sendto(send_pck, (client_ip, client_udp_port))
-        print("No valid")
         return
 
     valid_client = get_client_by_Id(client_id_transm)
@@ -139,94 +152,154 @@ def register_reg(received_package, client_ip, client_udp_port):
 
     if valid_client.status == DISCONNECTED:
         reg_ack_phase(valid_client)
+    else:
+        print_message("Rebut paquet REG_REQ en estat diferent a Disconnected")
+        change_status(valid_client.id, DISCONNECTED)
 
 
 def reg_ack_phase(valid_client):
-    udp_port = 46666
+    global sock
+    #Creo id_comm i nou port per on iniciarem l'intercanvi del REG_INFO
     rand_num = random.randint(1111111111, 9999999999)
-    send_pck = reg_ack_pack_maker(rand_num, udp_port)
-    change_client_state(valid_client.id, WAIT_INFO)
     valid_client.id_comm = str(rand_num)
+
+    #Obrim socket per rebre el REG_INFO
+    port_aleatori = client_udp_socket(valid_client)
+    print(port_aleatori)
+    #Envio REG_ACK amb el port creat anteriorment
+    send_pck = reg_ack_pack_maker(rand_num, port_aleatori)
+
+    #send_udp_packet(valid_client, send_pck)
     sock.udp_socket.sendto(send_pck, (valid_client.ip, valid_client.udp_port))
-    client_udp_socket(valid_client, udp_port)
+    change_status(valid_client.id, WAIT_INFO)
 
-    trys_recv_reg_info = 0
-    while valid_client.status == WAIT_INFO and trys_recv_reg_info != Z*3:
-        try:
-            valid_client.udp_socket.settimeout(2)
-            reg_info, client_ip, client_port = recieve_udp_packet(84, valid_client.udp_socket)
-            if reg_info[0] == REG_INFO:
-                break
-            trys_recv_reg_info += 1
-        except socket.error as socketerror:
-            trys_recv_reg_info += 1
 
-    if trys_recv_reg_info == Z * 3:
-        change_client_state(valid_client.id, DISCONNECTED)
-        print_message("ERROR-> PAQUET REG INFO no rebut, passant a DISCONNECTED")
+    try:
+        reg_info, client_ip, client_port = recieve_udp_packet(84, valid_client.udp_socket)
+    except socket.error as socketerror:
+        print_message("Paquet REG_INFO no rebut")
+        valid_client.udp_socket.close()
+        change_status(valid_client.id, DISCONNECTED)
         return
-
     valid_client.udp_socket.close()
+    #Tanquem socket i tractem el REG_INFO
+
+
     pack_type = reg_info[0]
     client_id_comm = reg_info[2].decode().split("\x00")[0]
     client_dades = reg_info[3].decode(errors="ignore").split("\x00")[0]
 
-    if pack_type == REG_INFO and client_ip == valid_client.ip and client_id_comm == valid_client.id_comm and len(client_dades) > 10 and valid_client.status == WAIT_INFO:
+    if pack_type == REG_INFO and client_ip == valid_client.ip and client_id_comm == valid_client.id_comm \
+       and len(client_dades) > 10 and valid_client.status == WAIT_INFO:
+
         set_reg_client_data(valid_client, client_dades)
         send_info_ack = info_ack_pack_maker(valid_client.id_comm)
-        sock.udp_socket.sendto(send_info_ack, (valid_client.ip, valid_client.udp_port))
-        change_client_state(valid_client.id, REGISTERED)
+        send_udp_packet(valid_client, send_info_ack)
+        change_status(valid_client.id, REGISTERED)
 
-        first_alive = threading.Thread(target=wait_first_alive, args=(valid_client.id,))
-        first_alive.start()
+        alive_timeout = datetime.now() + timedelta(seconds=3)
+        alive_treatment = threading.Thread(target=wait_alives, args=(valid_client.id, alive_timeout))
+        alive_treatment.start()
         return
     else:
+        print_message("Paquet REG_INFO incorrecte")
         send_info_nack = info_nack_pack_maker("Dades incorrectes", valid_client.id_comm)
-        sock.udp_socket.sendto(send_info_nack, (valid_client.ip, valid_client.udp_port))
-        change_client_state(valid_client.id, DISCONNECTED)
+        send_udp_packet(valid_client, send_info_nack)
+        change_status(valid_client.id, DISCONNECTED)
+        return
+
 
 def alive_phase(recv_pack):
     client_id_transm = recv_pack[1].decode().split("\x00")[0]
     client_id_comm = recv_pack[2].decode().split("\x00")[0]
     client_dades = recv_pack[3].decode("latin-1").split("\x00")[0]
-
     alive_client = get_client_by_Id(client_id_transm)
 
-    print(client_dades, " de llargaria: ", len(client_dades))
+    if alive_client.id_comm == client_id_comm and len(client_dades) == 0:
+        if alive_client.status == REGISTERED:
+            alive_client.first_alive_recv = True
 
-    if alive_client.status == REGISTERED and alive_client.id_comm == client_id_comm:
-        change_client_state(alive_client.id, SEND_ALIVE)
+        alive_client.receive_alive = True
+        alive_pck = alive_pack_maker(alive_client.id, alive_client.id_comm)
+        send_udp_packet(alive_client, alive_pck)
     elif alive_client.status == REGISTERED:
         print("INFO -> 1r Alive no valid: ", alive_client.id)
         alive_rej_pck = alive_rej_pack_maker(alive_client.id, alive_client.id_comm)
-        change_client_state(alive_client.id, DISCONNECTED)
-
-    if alive_client.status == SEND_ALIVE and alive_client.id_comm == client_id_comm:
-        alive_pck = alive_pack_maker(alive_client.id, alive_client.id_comm)
-        sock.udp_socket.sendto(alive_pck, (alive_client.ip, alive_client.udp_port))
-
-        if alive_client.consecutive_alive > 0 and alive_client.consecutive_alive < X-1:
-            alive_client.consecutive_alive -= 1
-        return
-
-    alive_client.consecutive_alive += 1
-    print("INFO -> Alives no consecutius: ", alive_client.consecutive_alive)
-    if alive_client.consecutive_alive == X:
-        print("INFO-> No s'ha rebut 3 ALIVES consecutius de: ", alive_client.id)
-        change_client_state(alive_client.id, DISCONNECTED)
+        change_status(alive_client.id, DISCONNECTED)
         return
 
 
-def wait_first_alive(client_id):
-    client = get_client_by_Id(client_id)
-    time.sleep(W)
-    if(client.status == REGISTERED):
-        print("INFO -> Primer ALIVE no rebut en 3 segons...Tornant ", client.id, "a l'estat DISCONNECTED")
-        change_client_state(client.id, DISCONNECTED)
-        return
+def wait_alives(client_id, alive_timeout):
+    alive_client = get_client_by_Id(client_id)
+
+    if alive_client.status == REGISTERED:
+        recieved_firts_packet = False
+        while datetime.now() < alive_timeout:
+            if alive_client.first_alive_recv == True and alive_client.receive_alive:
+                recieved_firts_packet = True
+                change_status(client_id, SEND_ALIVE)
+                break
+        if not recieved_firts_packet:
+            print("Primer Paquet ALIVE ha arribat a temps")
+            change_status(client_id, DISCONNECTED)
+
+    while alive_client.status == SEND_ALIVE:
+        send_alive_timeout = datetime.now() + timedelta(seconds=3)
+        alive_client.receive_alive = False
+        received_alive = False
+        while datetime.now() < send_alive_timeout:
+            if alive_client.receive_alive:
+                alive_client.consecutive_alive = 0
+                received_alive = True
+        if not received_alive:
+            alive_client.consecutive_alive += 1
+
+        if alive_client.consecutive_alive == 3:
+            print("No s'han rebut 3 ALIVE consecutius del client: ", alive_client.id)
+            alive_client.consecutive_alive = 0
+            change_status(client_id, DISCONNECTED)
+
+
+# -----------------------------TCP && SET/GET FUNCTIONS------------------------------------------#
+def tcp_loop():
+    global sock
+    while (1):
+        try:
+            sock.tcp_socket.settimeout(3)
+            private_socket, (client_ip, client_port) = sock.tcp_socket.accept()
+            recieved_pck_tcp = recieve_tcp_packet(127, private_socket)
+            if recieved_pck_tcp:
+                pack_procedure = threading.Thread(target=tcp_pack_procedure, args=(recieved_pck_tcp, private_socket))
+                pack_procedure.start()
+
+        except socket.error as socketerror:
+            e = "error"
+
+
+def tcp_pack_procedure(packet, socket):
+
+    client_id = packet[1].decode().split("\x00")[0]
+
+
+    if packet[0] == SEND_DATA:
+        send_data_procedure(packet, socket)
 
 
 # -----------------------------SEND && RECIEVE UDP/TCP------------------------------------------#
+def send_udp_packet(client, packet):
+    sock.udp_socket.sendto(packet, (client.ip, client.udp_port))
+
+    received_package_unpacked = struct.unpack('B11s11s61s', packet)
+    pack_type = received_package_unpacked[0]
+    client_id_transm = received_package_unpacked[1].decode().split("\x00")[0]
+    client_id_comm = received_package_unpacked[2].decode().split("\x00")[0]
+    client_dades = received_package_unpacked[3].decode(errors="ignore").split("\x00")[0]
+
+    if debug_mode == True:
+        print_message("UDP PACKET Send -> Type: " + str_status(pack_type) + ", " +
+                      "Id_transm: " + client_id_transm + ", " +
+                      "Id_comm: " + client_id_comm + ", " +
+                      "Dades: " + client_dades)
 
 def recieve_udp_packet(num_bytes, sockets):
     global sock
@@ -244,6 +317,33 @@ def recieve_udp_packet(num_bytes, sockets):
                       "Id_comm: " + client_id_comm + ", " +
                       "Dades: " + client_dades)
     return received_package_unpacked, client_ip, client_port
+
+
+def recieve_tcp_packet(num_bytes, sockets):
+    global sock
+    global debug_mode
+    recieved_pck_tcp = sockets.recv(num_bytes)
+
+    if recieved_pck_tcp == b'':
+        print("Paquet TCP no arribat")
+        return False
+
+    received_package_unpacked = struct.unpack('B11s11s8s16s80s', recieved_pck_tcp)
+    pack_type = received_package_unpacked[0]
+    client_id_transm = received_package_unpacked[1].decode().split("\x00")[0]
+    client_id_comm = received_package_unpacked[2].decode().split("\x00")[0]
+    client_element = received_package_unpacked[3].decode().split("\x00")[0]
+    client_valor = received_package_unpacked[4].decode(errors="ignore").split("\x00")[0]
+    client_info = received_package_unpacked[5].decode(errors="ignore").split("\x00")[0]
+
+    if debug_mode == True:
+        print_message("UDP PACKET Recv -> Type: " + str_status(pack_type) + ", " +
+                      "Id_transm: " + client_id_transm + ", " +
+                      "Id_comm: " + client_id_comm + ", " +
+                      "Element: " + client_element + ", " +
+                      "valor: " + client_valor + ", " +
+                      "info: " + client_info)
+    return received_package_unpacked
 
 
 # -----------------------------ERROR CONTROL && PACKET MAKERS------------------------------------------#
@@ -283,23 +383,83 @@ def info_nack_pack_maker(motiu, id_comm):
                               bytes(motiu, 'ascii'))
     return reg_ack_pck
 
+
 def alive_pack_maker(client_id, id_comm):
     reg_ack_pck = struct.pack('B11s11s61s', ALIVE, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
                               bytes(client_id, 'ascii'))
     return reg_ack_pck
+
 
 def alive_rej_pack_maker(client_id, id_comm):
     reg_ack_pck = struct.pack('B11s11s61s', ALIVE_REJ, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
                               bytes(client_id, 'ascii'))
     return reg_ack_pck
 
+def data_ack_pack_maker(client_id, id_comm, element, valor):
+    reg_ack_pck = struct.pack('B11s11s8s16s80s', DATA_ACK, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
+                              bytes(str(element), 'ascii'), bytes(str(valor), 'ascii'), bytes(client_id, 'ascii'))
+    return reg_ack_pck
+
+def data_rej_pack_maker(motiu):
+    reg_ack_pck = struct.pack('B11s11s8s16s80s', DATA_REJ, bytes(server_inf.id, 'ascii'), bytes("", 'ascii'),
+                              bytes("", 'ascii'), bytes("", 'ascii'), bytes(motiu, 'ascii'))
+    return reg_ack_pck
+
+
+def element_exist(client, element):
+    token = client.all_elements.split(";")
+
+    for true_element in token:
+        if element == true_element:
+            return  True
+    return False
+# -----------------------------TCP DATA TREATMENT------------------------------------------#
+def send_data_procedure(data_pack, socket):
+    client_id = data_pack[1].decode().split("\x00")[0]
+    client_id_comm = data_pack[2].decode().split("\x00")[0]
+    client_element = data_pack[3].decode().split("\x00")[0]
+    client_valor = data_pack[4].decode("latin-1").split("\x00")[0]
+
+    data_client = get_client_by_Id(client_id)
+    if not data_client:
+        for clients in allowed_client:
+            if clients.id_comm == client_id_comm:
+                send_package = data_rej_pack_maker("Dades del dispositiu incorrectes")
+                socket.send(send_package)
+                change_status(clients.id, DISCONNECTED)
+        return
+
+    if client_id_comm == data_client.id_comm and element_exist(data_client, client_element):
+        data_maker(client_id, str_status(data_pack[0]), client_element, client_valor)
+        send_package = data_ack_pack_maker(client_id, client_id_comm, client_element, client_valor)
+        socket.send(send_package)
+        return
+    else:
+        send_package = data_rej_pack_maker("Dades del dispositiu incorrectes")
+        socket.send(send_package)
+        change_status(client_id, DISCONNECTED)
+        return
+
+
 
 # -----------------------------SAVE_FILES AND GLOBAL FUNCTIONS------------------------------------------#
+
+def data_maker(client_id, pack_type, element, value):
+    name_file = str(client_id) + ".data"
+    file = open(name_file, "w")
+
+    if len(value) == 0:
+        value = "NO-VALUE"
+
+    current_time = time.strftime("%Y-%m-%d;%H:%M:%S", time.localtime(time.time()))
+    file.write(current_time + ";" + pack_type + ";" + element + ";" + value)
+    return
+
+
 def set_reg_client_data(client, data):
-    data = "6359,LUM-0-O;LUM-0-I;PRE-0-O;TEM-0-O"
     token = data.split(",")
     client.tcp_socket = token[0]
-    client.elements = token[1]
+    client.all_elements = token[1]
 
 
 def arg_treatment(argv):
@@ -359,7 +519,7 @@ def save_client_database(database_file):
             client.id = token
             client.status = DISCONNECTED
             client.ip = client.ip
-            client.elements = client.elements
+            client.elements = client.all_elements
             client.id_comm = client.id_comm
             allowed_client.append(client)
             num_clients += 1
@@ -389,7 +549,7 @@ def client_list():
             print(client.id, "-", str(9 * " " if client.ip is None else client.ip),
                   "  -", str(10 * " " if client.id_comm is None else client.id_comm),
                   "-", str_status(client.status), str((11 - len(str_status(client.status))) * " "), "-",
-                  str(10 * " " if client.elements is None else client.elements))
+                  str(10 * " " if client.all_elements is None else client.all_elements))
 
 
 def str_status(status):
@@ -447,17 +607,20 @@ def str_status(status):
 
 def command_treatment():
     global sock
-    while True:
-        line = sys.stdin.readline()
-        command = line.split("\n")[0]
+    try:
+        while True:
+            line = sys.stdin.readline()
+            command = line.split("\n")[0]
 
-        if command == "list":
-            client_list()
-        elif command == "quit":
-            print_message("Tancant server...")
-            os.kill(os.getpid(), signal.SIGINT)
-        else:
-            print_message("ERROR! Comanda no trobada: " + command)
+            if command == "list":
+                client_list()
+            elif command == "quit":
+                print_message("Tancant server...")
+                os.kill(os.getpid(), signal.SIGINT)
+            else:
+                print_message("ERROR! Comanda no trobada: " + command)
+    except(KeyboardInterrupt, SystemExit):
+        return
 
 
 def get_client_by_Id(id_transm):
@@ -468,22 +631,42 @@ def get_client_by_Id(id_transm):
             return client
     return False
 
-def change_client_state(client_id, new_state):
+
+def change_status(client_id, new_state):
     client = get_client_by_Id(client_id)
     client.status = new_state
 
     print_message("INFO  -> Client " + client_id + " cambia al estat: "
                   + str_status(new_state))
 
+
 # -----------------------------MAIN FUNCTION------------------------------------------#
 def main():
-    arg_treatment(sys.argv)
-    command_thread = threading.Thread(target=command_treatment)
-    command_thread.start()
-    udp_socket()
-    tcp_socket()
-    reg_alive_phase_loop = threading.Thread(target=register_loop)
-    reg_alive_phase_loop.start()
+    global sock
+    global allowed_client
+    try:
+        arg_treatment(sys.argv)
+        command_thread = threading.Thread(target=command_treatment)
+        command_thread.daemon = True
+        command_thread.start()
+        udp_socket()
+        tcp_socket()
+        udp_connection = threading.Thread(target=udp_loop)
+        udp_connection.start()
+        tcp_connection = threading.Thread(target=tcp_loop)
+        tcp_connection.start()
+    except(KeyboardInterrupt, SystemExit):
+        clients_data_lock.acquire()
+        sock.udp_socket.close()
+        sock.tcp_socket.close()
+        for client in allowed_client:
+            if client.udp_socket is not None:
+                client.udp_socket.close()
+            if client.tcp_socket is not None:
+                client.tcp_socket.close()
+        clients_data_lock.release()
+        exit(1)
+
 
 if __name__ == "__main__":
     main()
