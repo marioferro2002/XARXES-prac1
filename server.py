@@ -1,6 +1,7 @@
+#!/usr/bin/env python3
+
 import os
 import random
-import select
 import signal
 import socket
 import struct
@@ -13,6 +14,8 @@ from datetime import timedelta
 Z = 2
 W = 3
 X = 3
+T = 1
+M = 3
 # Packet_type
 
 REG_REQ = 0xa0
@@ -76,7 +79,6 @@ class Socket:
 
 # GLobal Functions
 allowed_client = []
-clients_data_lock = threading.Lock()
 debug_mode = False
 sock = Socket()
 server_inf = Server()
@@ -100,7 +102,6 @@ def client_udp_socket(client):
     if (debug_mode == True):
         print_message("Port UDP : " + str(port) + " obert al client: " + client.id)
 
-
     return port
 
 
@@ -113,13 +114,20 @@ def tcp_socket():
     sock.tcp_socket.listen(5)
 
 
+def client_tcp_socket(client):
+    client.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_address = (client.ip, int(client.tcp_port))
+    client.tcp_socket.connect(client_address)
+    print_message("Iniciant protocol TCP al port: " + str(client.tcp_port) + " per al client: " + client.id)
+
+
 # -----------------------------REGISTER && ALIVE FUNCTIONS------------------------------------------#
 def udp_loop():
     global sock
     while (1):
         try:
             sock.udp_socket.settimeout(2)
-            recieved_pck_udp, client_ip, client_port = recieve_udp_packet(84, sock.udp_socket)
+            recieved_pck_udp, client_ip, client_port = receive_udp_packet(84, sock.udp_socket)
             pack_ack = threading.Thread(target=register_loop, args=(recieved_pck_udp, client_ip, client_port))
             pack_ack.start()
         except socket.error as socketerror:
@@ -159,38 +167,36 @@ def register_reg(received_package, client_ip, client_udp_port):
 
 def reg_ack_phase(valid_client):
     global sock
-    #Creo id_comm i nou port per on iniciarem l'intercanvi del REG_INFO
+    # Creo id_comm i nou port per on iniciarem l'intercanvi del REG_INFO
     rand_num = random.randint(1111111111, 9999999999)
     valid_client.id_comm = str(rand_num)
 
-    #Obrim socket per rebre el REG_INFO
+    # Obrim socket per rebre el REG_INFO
     port_aleatori = client_udp_socket(valid_client)
-    print(port_aleatori)
-    #Envio REG_ACK amb el port creat anteriorment
+
+    # Envio REG_ACK amb el port creat anteriorment
     send_pck = reg_ack_pack_maker(rand_num, port_aleatori)
 
-    #send_udp_packet(valid_client, send_pck)
-    sock.udp_socket.sendto(send_pck, (valid_client.ip, valid_client.udp_port))
+    send_udp_packet(valid_client, send_pck)
     change_status(valid_client.id, WAIT_INFO)
 
-
     try:
-        reg_info, client_ip, client_port = recieve_udp_packet(84, valid_client.udp_socket)
+        valid_client.udp_socket.settimeout(Z * T)
+        reg_info, client_ip, client_port = receive_udp_packet(84, valid_client.udp_socket)
     except socket.error as socketerror:
         print_message("Paquet REG_INFO no rebut")
         valid_client.udp_socket.close()
         change_status(valid_client.id, DISCONNECTED)
         return
     valid_client.udp_socket.close()
-    #Tanquem socket i tractem el REG_INFO
-
+    # Tanquem socket i tractem el REG_INFO
 
     pack_type = reg_info[0]
     client_id_comm = reg_info[2].decode().split("\x00")[0]
     client_dades = reg_info[3].decode(errors="ignore").split("\x00")[0]
 
     if pack_type == REG_INFO and client_ip == valid_client.ip and client_id_comm == valid_client.id_comm \
-       and len(client_dades) > 10 and valid_client.status == WAIT_INFO:
+            and len(client_dades) > 10 and valid_client.status == WAIT_INFO:
 
         set_reg_client_data(valid_client, client_dades)
         send_info_ack = info_ack_pack_maker(valid_client.id_comm)
@@ -233,18 +239,19 @@ def wait_alives(client_id, alive_timeout):
     alive_client = get_client_by_Id(client_id)
 
     if alive_client.status == REGISTERED:
-        recieved_firts_packet = False
+        received_first_packet = False
         while datetime.now() < alive_timeout:
             if alive_client.first_alive_recv == True and alive_client.receive_alive:
-                recieved_firts_packet = True
+                received_first_packet = True
                 change_status(client_id, SEND_ALIVE)
                 break
-        if not recieved_firts_packet:
-            print("Primer Paquet ALIVE ha arribat a temps")
+        if not received_first_packet:
+            print_message("Primer Paquet ALIVE ha arribat a temps")
             change_status(client_id, DISCONNECTED)
+            return
 
     while alive_client.status == SEND_ALIVE:
-        send_alive_timeout = datetime.now() + timedelta(seconds=3)
+        send_alive_timeout = datetime.now() + timedelta(seconds=2)
         alive_client.receive_alive = False
         received_alive = False
         while datetime.now() < send_alive_timeout:
@@ -258,34 +265,32 @@ def wait_alives(client_id, alive_timeout):
             print("No s'han rebut 3 ALIVE consecutius del client: ", alive_client.id)
             alive_client.consecutive_alive = 0
             change_status(client_id, DISCONNECTED)
+            return
 
 
 # -----------------------------TCP && SET/GET FUNCTIONS------------------------------------------#
 def tcp_loop():
     global sock
-    while (1):
+    while 1:
         try:
             sock.tcp_socket.settimeout(3)
             private_socket, (client_ip, client_port) = sock.tcp_socket.accept()
-            recieved_pck_tcp = recieve_tcp_packet(127, private_socket)
-            if recieved_pck_tcp:
-                pack_procedure = threading.Thread(target=tcp_pack_procedure, args=(recieved_pck_tcp, private_socket))
+            received_pck_tcp = receive_tcp_packet(127, private_socket)
+
+            if received_pck_tcp:
+                pack_procedure = threading.Thread(target=tcp_pack_procedure, args=(received_pck_tcp, private_socket))
                 pack_procedure.start()
+        except socket.error as socket_error:
+            socket_error = "error"
 
-        except socket.error as socketerror:
-            e = "error"
 
-
-def tcp_pack_procedure(packet, socket):
-
+def tcp_pack_procedure(packet, sockets):
     client_id = packet[1].decode().split("\x00")[0]
-
-
     if packet[0] == SEND_DATA:
-        send_data_procedure(packet, socket)
+        send_data_procedure(packet, sockets)
 
 
-# -----------------------------SEND && RECIEVE UDP/TCP------------------------------------------#
+# -----------------------------SEND && RECEIVE UDP/TCP------------------------------------------#
 def send_udp_packet(client, packet):
     sock.udp_socket.sendto(packet, (client.ip, client.udp_port))
 
@@ -295,23 +300,24 @@ def send_udp_packet(client, packet):
     client_id_comm = received_package_unpacked[2].decode().split("\x00")[0]
     client_dades = received_package_unpacked[3].decode(errors="ignore").split("\x00")[0]
 
-    if debug_mode == True:
+    if debug_mode:
         print_message("UDP PACKET Send -> Type: " + str_status(pack_type) + ", " +
                       "Id_transm: " + client_id_transm + ", " +
                       "Id_comm: " + client_id_comm + ", " +
                       "Dades: " + client_dades)
 
-def recieve_udp_packet(num_bytes, sockets):
+
+def receive_udp_packet(num_bytes, sockets):
     global sock
     global debug_mode
-    recieved_pck_udp, (client_ip, client_port) = sockets.recvfrom(num_bytes)
-    received_package_unpacked = struct.unpack('B11s11s61s', recieved_pck_udp)
+    received_pck_udp, (client_ip, client_port) = sockets.recvfrom(num_bytes)
+    received_package_unpacked = struct.unpack('B11s11s61s', received_pck_udp)
     pack_type = received_package_unpacked[0]
     client_id_transm = received_package_unpacked[1].decode().split("\x00")[0]
     client_id_comm = received_package_unpacked[2].decode().split("\x00")[0]
     client_dades = received_package_unpacked[3].decode(errors="ignore").split("\x00")[0]
 
-    if debug_mode == True:
+    if debug_mode:
         print_message("UDP PACKET Recv -> Type: " + str_status(pack_type) + ", " +
                       "Id_transm: " + client_id_transm + ", " +
                       "Id_comm: " + client_id_comm + ", " +
@@ -319,7 +325,7 @@ def recieve_udp_packet(num_bytes, sockets):
     return received_package_unpacked, client_ip, client_port
 
 
-def recieve_tcp_packet(num_bytes, sockets):
+def receive_tcp_packet(num_bytes, sockets):
     global sock
     global debug_mode
     recieved_pck_tcp = sockets.recv(num_bytes)
@@ -336,14 +342,38 @@ def recieve_tcp_packet(num_bytes, sockets):
     client_valor = received_package_unpacked[4].decode(errors="ignore").split("\x00")[0]
     client_info = received_package_unpacked[5].decode(errors="ignore").split("\x00")[0]
 
-    if debug_mode == True:
-        print_message("UDP PACKET Recv -> Type: " + str_status(pack_type) + ", " +
+    if debug_mode:
+        print_message("TCP PACKET Recv -> Type: " + str_status(pack_type) + ", " +
                       "Id_transm: " + client_id_transm + ", " +
                       "Id_comm: " + client_id_comm + ", " +
                       "Element: " + client_element + ", " +
                       "valor: " + client_valor + ", " +
                       "info: " + client_info)
     return received_package_unpacked
+
+
+def send_tcp_packet(packet, sockets):
+    global sock
+    global debug_mode
+
+    sockets.sendall(packet)
+
+    send_package_unpacked = struct.unpack('B11s11s8s16s80s', packet)
+    pack_type = packet[0]
+    client_id_transm = send_package_unpacked[1].decode().split("\x00")[0]
+    client_id_comm = send_package_unpacked[2].decode().split("\x00")[0]
+    client_element = send_package_unpacked[3].decode().split("\x00")[0]
+    client_valor = send_package_unpacked[4].decode(errors="ignore").split("\x00")[0]
+    client_info = send_package_unpacked[5].decode(errors="ignore").split("\x00")[0]
+
+    if debug_mode:
+        print_message("TCP PACKET Send -> Type: " + str_status(pack_type) + ", " +
+                      "Id_transm: " + client_id_transm + ", " +
+                      "Id_comm: " + client_id_comm + ", " +
+                      "Element: " + client_element + ", " +
+                      "valor: " + client_valor + ", " +
+                      "info: " + client_info)
+    return
 
 
 # -----------------------------ERROR CONTROL && PACKET MAKERS------------------------------------------#
@@ -395,14 +425,28 @@ def alive_rej_pack_maker(client_id, id_comm):
                               bytes(client_id, 'ascii'))
     return reg_ack_pck
 
+
 def data_ack_pack_maker(client_id, id_comm, element, valor):
     reg_ack_pck = struct.pack('B11s11s8s16s80s', DATA_ACK, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
                               bytes(str(element), 'ascii'), bytes(str(valor), 'ascii'), bytes(client_id, 'ascii'))
     return reg_ack_pck
 
+
 def data_rej_pack_maker(motiu):
     reg_ack_pck = struct.pack('B11s11s8s16s80s', DATA_REJ, bytes(server_inf.id, 'ascii'), bytes("", 'ascii'),
                               bytes("", 'ascii'), bytes("", 'ascii'), bytes(motiu, 'ascii'))
+    return reg_ack_pck
+
+
+def set_data_maker(client_id, id_comm, element, valor):
+    reg_ack_pck = struct.pack('B11s11s8s16s80s', SET_DATA, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
+                              bytes(str(element), 'ascii'), bytes(str(valor), 'ascii'), bytes(client_id, 'ascii'))
+    return reg_ack_pck
+
+
+def get_data_pack_maker(client_id, id_comm, element):
+    reg_ack_pck = struct.pack('B11s11s8s16s80s', GET_DATA, bytes(server_inf.id, 'ascii'), bytes(str(id_comm), 'ascii'),
+                              bytes(str(element), 'ascii'), bytes("", 'ascii'), bytes(client_id, 'ascii'))
     return reg_ack_pck
 
 
@@ -411,8 +455,10 @@ def element_exist(client, element):
 
     for true_element in token:
         if element == true_element:
-            return  True
+            return True
     return False
+
+
 # -----------------------------TCP DATA TREATMENT------------------------------------------#
 def send_data_procedure(data_pack, socket):
     client_id = data_pack[1].decode().split("\x00")[0]
@@ -430,7 +476,7 @@ def send_data_procedure(data_pack, socket):
         return
 
     if client_id_comm == data_client.id_comm and element_exist(data_client, client_element):
-        data_maker(client_id, str_status(data_pack[0]), client_element, client_valor)
+        data_maker(client_id, str_status(data_pack[0]), client_element, client_valor, 0)
         send_package = data_ack_pack_maker(client_id, client_id_comm, client_element, client_valor)
         socket.send(send_package)
         return
@@ -441,24 +487,28 @@ def send_data_procedure(data_pack, socket):
         return
 
 
-
 # -----------------------------SAVE_FILES AND GLOBAL FUNCTIONS------------------------------------------#
 
-def data_maker(client_id, pack_type, element, value):
+def data_maker(client_id, pack_type, element, value, time_from_client):
     name_file = str(client_id) + ".data"
-    file = open(name_file, "w")
+    file = open(name_file, "a+")
+    file.read()
 
     if len(value) == 0:
         value = "NO-VALUE"
 
     current_time = time.strftime("%Y-%m-%d;%H:%M:%S", time.localtime(time.time()))
+    if time_from_client != 0:
+        current_time = time_from_client
     file.write(current_time + ";" + pack_type + ";" + element + ";" + value)
+    file.write('\n')
+    file.close()
     return
 
 
 def set_reg_client_data(client, data):
     token = data.split(",")
-    client.tcp_socket = token[0]
+    client.tcp_port = token[0]
     client.all_elements = token[1]
 
 
@@ -519,7 +569,7 @@ def save_client_database(database_file):
             client.id = token
             client.status = DISCONNECTED
             client.ip = client.ip
-            client.elements = client.all_elements
+            client.all_elements = client.all_elements
             client.id_comm = client.id_comm
             allowed_client.append(client)
             num_clients += 1
@@ -609,17 +659,104 @@ def command_treatment():
     global sock
     try:
         while True:
-            line = sys.stdin.readline()
-            command = line.split("\n")[0]
-
+            line = sys.stdin.readline().strip('\n')
+            command = line.split(" ")[0]
             if command == "list":
                 client_list()
+            elif command == "get":
+                get_call(line)
+            elif command == "set":
+                set_call(line)
             elif command == "quit":
                 print_message("Tancant server...")
-                os.kill(os.getpid(), signal.SIGINT)
+                sock.udp_socket.close()
+                sock.tcp_socket.close()
+                os.kill(os.getpid(), signal.SIGTERM)
             else:
                 print_message("ERROR! Comanda no trobada: " + command)
     except(KeyboardInterrupt, SystemExit):
+        return
+
+
+def set_call(argument):
+    client_id = argument.split(" ")[1]
+    element = argument.split(" ")[2]
+    valor_element = argument.split(" ")[3]
+    client = get_client_by_Id(client_id)
+
+    if client is not False and element_exist(client, element):
+        if element.split("-")[2] == "I":
+            client_tcp_socket(client)
+            send_pck = set_data_maker(client_id, client.id_comm, element, valor_element)
+            send_tcp_packet(send_pck, client.tcp_socket)
+
+            try:
+                client.tcp_socket.settimeout(M)
+                recv_packet = receive_tcp_packet(127, client.tcp_socket)
+                set_get_rec_procedure(recv_packet, client, element, SET_DATA)
+                client.tcp_socket.close()
+                return
+
+            except socket.error as socketerror:
+                client.tcp_socket.close()
+                print_message("Resposta al SET_DATA no rebuda")
+                change_status(client_id, DISCONNECTED)
+                return
+        return
+        print_message("L'element anomenat: " + element + " és un sensor i no permet establir el seu valor")
+    else:
+        print_message("SET_DATA no realitzat: Dades incorrectes o estat diferent a SEND_ALIVE")
+    print("Us de la comanda: set <identificador_dispositiu> <identificador_element> <nou_valor>")
+
+
+def get_call(argument):
+    client_id = argument.split(" ")[1]
+    element = argument.split(" ")[2]
+
+    client = get_client_by_Id(client_id)
+
+    if client is not False and client.status == SEND_ALIVE and element_exist(client, element):
+
+        client_tcp_socket(client)
+        send_pck = get_data_pack_maker(client.id, client.id_comm, element)
+        send_tcp_packet(send_pck, client.tcp_socket)
+
+        try:
+            client.tcp_socket.settimeout(M)
+            recv_packet = receive_tcp_packet(127, client.tcp_socket)
+            set_get_rec_procedure(recv_packet, client, element, GET_DATA)
+            client.tcp_socket.close()
+            return
+
+        except socket.error as socketerror:
+            client.tcp_socket.close()
+            print_message("Resposta al GET_DATA no rebuda")
+            change_status(client_id, DISCONNECTED)
+            return
+
+        return
+    else:
+        print_message("GET_DATA no realitzat: Dades incorrectes o estat diferent a SEND_ALIVE")
+    print("Us de la comanda: get <identificador_dispositiu> <identificador_element>")
+
+
+def set_get_rec_procedure(recv_packet, client, element, procedure_type):
+    pack_type = recv_packet[0]
+    client_id = recv_packet[1].decode().split("\x00")[0]
+    client_id_comm = recv_packet[2].decode().split("\x00")[0]
+    element_recv = recv_packet[3].decode().split("\x00")[0]
+    valor = recv_packet[4].decode(errors="ignore").split("\x00")[0]
+    client_info = recv_packet[5].decode(errors="ignore").split("\x00")[0]
+
+    if client.id == client_id and client.id_comm == client_id_comm and element == element_recv:
+        if pack_type == DATA_ACK:
+            data_maker(client_id, str_status(procedure_type), element, valor, client_info)
+            print_message("Operacio: " + str_status(procedure_type) + " correcte, element :" + element + " actualitzat")
+        elif pack_type == DATA_NACK:
+            print_message(
+                "Operacio: " + str_status(procedure_type) + " fallida, element :" + element + " no actualitzat")
+        elif pack_type == DATA_REJ:
+            change_status(client_id, DISCONNECTED)
         return
 
 
@@ -655,8 +792,8 @@ def main():
         udp_connection.start()
         tcp_connection = threading.Thread(target=tcp_loop)
         tcp_connection.start()
+
     except(KeyboardInterrupt, SystemExit):
-        clients_data_lock.acquire()
         sock.udp_socket.close()
         sock.tcp_socket.close()
         for client in allowed_client:
@@ -664,7 +801,6 @@ def main():
                 client.udp_socket.close()
             if client.tcp_socket is not None:
                 client.tcp_socket.close()
-        clients_data_lock.release()
         exit(1)
 
 
