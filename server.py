@@ -540,6 +540,10 @@ def send_data_procedure(data_pack, socket):
 def set_call(argument):
     """Tracta la comanda set del servidor. Si rep resposta, pasa a la funcio set_get_rec_procedure que tractara el paquet rebut.
     Si no rep resposta es considera com que el client ha perdut contacte i es pasa a DISCONNECTED"""
+
+    if len(argument.split(" ")) != 4:
+        print("Us de la comanda: set <identificador_dispositiu> <identificador_element> <nou_valor>")
+        return
     client_id = argument.split(" ")[1]
     element = argument.split(" ")[2]
     valor_element = argument.split(" ")[3]
@@ -576,6 +580,11 @@ def set_call(argument):
 def get_call(argument):
     """Tracta la comanda get del servidor. Si rep resposta, pasa a la funcio set_get_rec_procedure que tractara el paquet rebut.
     Si no rep resposta es considera com que el client ha perdut contacte i es pasa a DISCONNECTED"""
+
+    if len(argument.split(" ")) != 3:
+        print("Us de la comanda: get <identificador_dispositiu> <identificador_element>")
+        return
+
     client_id = argument.split(" ")[1]
     element = argument.split(" ")[2]
 
@@ -646,7 +655,7 @@ def data_maker(client_id, pack_type, element, value, time_from_client):
     file.write('\n')
     file.close()
 
-    print_message("Element: " + element + "actualitzat")
+    print_message("Paquet : " + pack_type + " rebut, " + " Element: " + element + " actualitzat")
     return
 
 
