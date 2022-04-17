@@ -9,8 +9,8 @@
 #include <unistd.h>
 #include <threads.h>
 #include <sys/select.h>
-//Doc General Defines
 
+//Doc General Defines
 #define MAX_CHAR 51
 #define T 1
 #define U 2
@@ -20,12 +20,10 @@
 #define Q 4
 #define V 2
 #define R 2
-#define S 2
+#define S 3
 #define M 3
 
-
 //Packet_type
-
 #define REG_REQ 0xa0
 #define REG_ACK 0xa1
 #define REG_NACK 0xa2
@@ -44,7 +42,6 @@
 #define GET_DATA 0xc5
 
 //Client-server state
-
 #define DISCONNECTED 0xf0
 #define NOT_REGISTERED 0xf1
 #define WAIT_ACK_REG 0xf2
@@ -88,7 +85,6 @@ struct socket_pck {
     int connection_fd;
     struct sockaddr_in udp_addr;
     struct sockaddr_in tcp_addr;
-    struct sockaddr_in tcp_addr_recv;
     struct timeval recv_timeout;
 };
 
@@ -113,8 +109,6 @@ void tcp_socket_recv();
 void udp_socket();
 
 /*+++++++++++++++++++++ALIVE-STATE-FUNCTIONS+++++++++++++++++++++*/
-
-void stay_alive(struct config_info client_info);
 
 void periodic_communication();
 
@@ -322,6 +316,7 @@ struct config_pdu_udp recv_pck_udp(int time_out) {
 
 
 void send_package_via_tcp_to_server(struct pdu_tcp_pack send_pck, int socket) {
+    //Funcio d'enviar per TCP
     if (write(socket, &send_pck, sizeof(send_pck)) == -1) {
         printf("Error al enviar paquet via TCP \n");
     }
@@ -330,9 +325,10 @@ void send_package_via_tcp_to_server(struct pdu_tcp_pack send_pck, int socket) {
                str_status_or_type(send_pck.type), send_pck.id_transm, send_pck.id_comm, send_pck.element,
                send_pck.valor, send_pck.info);
     }
-} //Funcio d'enviar per TCP
+}
 
 void receive_tcp_pck_from_server(int time_out, int socket) {
+    //Funcio de rebre paquets per TCP
     struct pdu_tcp_pack recieved_pack;
     fd_set writefds;
     FD_ZERO(&writefds);
@@ -353,13 +349,19 @@ void receive_tcp_pck_from_server(int time_out, int socket) {
         status_change_message(status);
         return;
     }
-} //Funcio de rebre per TCP
+}
 
 /*------------------ALIVE PHASE----------------------------*/
 
 
 
 void periodic_communication() {
+    /*Funcio que controla la comunicacio periodica amb el servidor.
+     * Comptara fins a tres ALIVES consecutius no rebuts,si aixo pasa,
+     * es tornara a la fase de registre considerant un nou intent de
+     * regristre que es sumara a la variable publica unfinished_register_try.
+     * En cas de rebre un ALIVE es reiniciara el contador no_consecutive_alive_packets a 0
+     */
 
     struct config_pdu_udp alive_packet;
     alive_packet = client_to_pdu();
@@ -378,9 +380,12 @@ void periodic_communication() {
             status_change_message(status);
         } else if (valid_server_udp_comms(recieved_packet_alive) && recieved_packet_alive.type == ALIVE_REJ) {
             status = NOT_REGISTERED;
-        } else if (valid_server_udp_comms(recieved_packet_alive) && recieved_packet_alive.type == ALIVE) {
+        } else if (validate_alive(recieved_packet_alive)) {
             no_consecutive_alive_packets = 0;
         }else if (!validate_alive(recieved_packet_alive)) {
+            if(debug_mode == 1){
+                printf("ALIVE Invalid\n");
+            }
             no_consecutive_alive_packets++;
             if (first_packet_alive) {
                 status = NOT_REGISTERED;
@@ -399,7 +404,8 @@ void periodic_communication() {
     }
 }
 
-void periodic_local_tcp_comms() { //Funcio que espera a estar amb estat SEND_ALIVE per obrir comunicacio TCP
+void periodic_local_tcp_comms() {
+    //Funcio que espera a estar amb estat SEND_ALIVE per obrir comunicacio TCP
     int i = 1;
     while (i > 0) {
         if (status == SEND_ALIVE) {
@@ -411,7 +417,9 @@ void periodic_local_tcp_comms() { //Funcio que espera a estar amb estat SEND_ALI
 
 
 /*-----------------------------------------------------------SOCKETS UDP & TCP----------------------------------*/
-void udp_socket() { //Socket UDP obert amb el port udp del archiu de configuracions
+void udp_socket() {
+    //Funcio que obra Socket UDP amb el port udp del archiu de configuracions
+
     struct sockaddr_in client_addr;
     struct hostent *ent;
 
@@ -447,7 +455,8 @@ void udp_socket() { //Socket UDP obert amb el port udp del archiu de configuraci
 
 }
 
-void tcp_socket() { //Socket tcp linkat amb el port del server
+void tcp_socket() {
+    //Funcio que obra Socket TCP linkat amb el port del server
     struct hostent *ent;
     ent = gethostbyname((char *) &user.server);
 
@@ -474,7 +483,8 @@ void tcp_socket() { //Socket tcp linkat amb el port del server
 
 }
 
-void tcp_socket_recv() { //Socket tcp linkat amb el port del client
+void tcp_socket_recv() {
+    //Funcio que obra Socket tcp linkat amb el port del client
     int ssock_cli;
     struct sockaddr_in client_tcp, server_addr;
 
@@ -514,7 +524,8 @@ void tcp_socket_recv() { //Socket tcp linkat amb el port del client
 /*--------------------------------------------PACKET TREATMENT-------------------*/
 //Funcions que creen paquets o els tracten
 
-struct config_pdu_udp client_to_pdu() {//Crea PDU a partir de la info del client
+struct config_pdu_udp client_to_pdu() {
+    //Crea PDU a partir de la info del client
 
     struct config_pdu_udp reg_pack;
 
@@ -525,7 +536,8 @@ struct config_pdu_udp client_to_pdu() {//Crea PDU a partir de la info del client
     return reg_pack;
 }
 
-struct config_pdu_udp reg_info_send_package_maker(struct config_pdu_udp tcp_package) {//Prepara el paquet a enviar en la fase REG_ACK
+struct config_pdu_udp reg_info_send_package_maker(struct config_pdu_udp tcp_package) {
+    //Prepara el paquet a enviar en la fase REG_ACK
     int i = 0;
     int pos = 5;
 
@@ -545,8 +557,8 @@ struct config_pdu_udp reg_info_send_package_maker(struct config_pdu_udp tcp_pack
     return tcp_package;
 }
 
-struct pdu_tcp_pack setup_tcp_package(int element_value, int type) {//Crea paquets TCP amb la PDU corresponent
-
+struct pdu_tcp_pack setup_tcp_package(int element_value, int type) {
+    //Crea paquets TCP amb la PDU corresponent
     struct pdu_tcp_pack send_package;
 
     char hora[9];
@@ -576,7 +588,8 @@ struct pdu_tcp_pack setup_tcp_package(int element_value, int type) {//Crea paque
     return send_package;
 }
 
-void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package) {//Tracta els paquets rebuts via tcp
+void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package) {
+    //Tracta els paquets rebuts via tcp
     struct pdu_tcp_pack send_package;
     int n_element = get_element(recieved_package.element);
 
@@ -591,8 +604,10 @@ void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package) {//Tra
     }
 
     if (valid_server_tcp_comms(recieved_package) && recieved_package.type == SET_DATA) {
+        //Tractament de SET_DATA
         if (n_element < 6 && user.elements[n_element][6] == 'I') {
             strcpy((char *) &user.valor_elements[n_element], recieved_package.valor);
+            printf("Element : %s actualitzat, nou valor : %s\n", user.elements[n_element], recieved_package.valor);
             send_package = setup_tcp_package(n_element, DATA_ACK);
             send_package_via_tcp_to_server(send_package, sock.connection_fd);
         } else {
@@ -605,29 +620,36 @@ void received_tcp_package_treatment(struct pdu_tcp_pack recieved_package) {//Tra
     }
 
     if (valid_server_tcp_comms(recieved_package) && recieved_package.type == GET_DATA) {
-
+        //Tractament de GET_DATA
         if (n_element < 6) {
             send_package = setup_tcp_package(n_element, DATA_ACK);
+            printf("Element : %s enviat al servidor\n", user.elements[n_element]);
+            send_package_via_tcp_to_server(send_package, sock.connection_fd);
+        }else{
+            send_package = setup_tcp_package(n_element, DATA_NACK);
+            strcpy(send_package.valor, recieved_package.valor);
+            strcpy(send_package.info, "Element invalid\n");
             send_package_via_tcp_to_server(send_package, sock.connection_fd);
         }
         return;
     } else {
-
+        //En cas de tindre dades incorrectes al GET_DATA o SET_DATA es tracten per igual i enviem DATA_REJ
         if (recieved_package.type == GET_DATA || recieved_package.type == SET_DATA) {
             send_package = setup_tcp_package(n_element, DATA_REJ);
             strcpy(send_package.valor, recieved_package.valor);
-            strcpy(send_package.info, "Error en les dades d'identificacio\n");
+            strcpy(send_package.info, "Error en les dades d'identificacio");
             send_package_via_tcp_to_server(send_package, sock.connection_fd);
         }
 
-        printf("Paquet TCP incorrecte, tornant a l'estat:");
+        printf("Paquet TCP incorrecte, tornant a l'estat: %s \n", str_status_or_type(NOT_REGISTERED));
         status = NOT_REGISTERED;
         return;
     }
 
 }
 
-struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct config_pdu_udp reg_ack_pack) {//Funcio que tracta el REG_ACK rebut
+struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct config_pdu_udp reg_ack_pack) {
+    //Funcio que tracta el REG_ACK rebut
 
     struct sockaddr_in addr_tcp_port = sock.udp_addr;
     unsigned char server_port[6];
@@ -655,12 +677,11 @@ struct config_pdu_udp wait_ack_reg_phase(unsigned char type, struct config_pdu_u
     return reg_info_packet;
 }
 
-/*--------------------------------------------ERROR CONTROLS & BOOLEANS-------------------*/
+/*--------------------------------------------ERROR CONTROLS & BOOLEANS----------------------------------------*/
 //Totes les funcions en aquest apartat tenen com a funcio simplificare el codi i no
 // trobar 4 linies de codig dintre dels condicionals
 
 bool valid_server_udp_comms(struct config_pdu_udp server_pack) {
-
     if (strcmp(inf_server.id_comm, server_pack.id_comm) == 0 &&
         strcmp(inf_server.id_transm, server_pack.id_transm) == 0 &&
         sock.udp_addr.sin_addr.s_addr == recieved_pack_addr.sin_addr.s_addr) {
@@ -686,21 +707,20 @@ void save_server_info_udp(struct config_pdu_udp server_pck) {
 
 }
 
-//*Tambe incloeixo com acontrol d'errors la funcio que calcula el interval
-// de temps al fallar els sends en la fase de registre
-void wait_after_send_package(int package_order) { //Funcio que calcula interval de temps a dormir al enviar x paquets
-    if (package_order > P) {
+/*Tambe incloeixo com a control d'errors la funcio que calcula el interval
+de temps al fallar els sends en la fase de registre */
 
+void wait_after_send_package(int package_order) {
+    //Funcio que calcula interval de temps a dormir al enviar x paquets
+    if (package_order > P) {
         if ((T + (T * (package_order - 2))) < T * Q) {
             sleep(T + (T * (package_order - 2)));
         } else {
             sleep(Q * T);
         }
-
     } else {
         sleep(T);
     }
-
 }
 
 bool validate_alive(struct config_pdu_udp recieved_packet) {
@@ -748,7 +768,6 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) { /
 
     int i = 0;
     while (cpy_token != NULL) {
-
         strcpy((char *) client.elements[i], cpy_token);
         cpy_token = strtok(NULL, ";");
         i++;
@@ -757,9 +776,7 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) { /
         strcpy((char *) client.elements[i], "NULL");
     }
 
-
     //local_tcp
-
     fgets(info, MAX_CHAR, file);
     info[strlen(info) - 1] = '\0';
     cpy_token = strtok(info, " ");
@@ -767,7 +784,6 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) { /
     strcpy((char *) client.local_TCP, cpy_token);
 
     //server
-
     fgets(info, MAX_CHAR, file);
     info[strlen(info) - 1] = '\0';
     cpy_token = strtok(info, " ");
@@ -776,7 +792,6 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) { /
 
 
     //server-UDP
-
     fgets(info, MAX_CHAR, file);
     info[strlen(info) - 1] = '\0';
     cpy_token = strtok(info, " ");
@@ -785,12 +800,14 @@ struct config_info read_config_files(int argc, char *argv[], int debug_mode) { /
 
 
     if (debug_mode == 1) {
-        printf("Configuració del client guardada!!\n Id: %s \n Elements: %s ...\n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n", client.id, client.elements[1], client.local_TCP, client.server, client.server_udp);
+        printf("Configuració del client guardada!!\n Id: %s \n Elements: %s ...\n Local_TCP: %s \n Server: %s \n Server_UDP: %s \n",
+               client.id, client.elements[1], client.local_TCP, client.server, client.server_udp);
     }
     return client;
 }
 
-int check_debug_mode(int argc, char *argv[]) {//Detecta si hem activat el mode debug
+int check_debug_mode(int argc, char *argv[]) {
+    //Detecta si hem activat el mode debug
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-d") == 0) {
             printf("DEBUG_MODE = ON \n");
@@ -801,7 +818,8 @@ int check_debug_mode(int argc, char *argv[]) {//Detecta si hem activat el mode d
     return 0;
 }
 
-char *get_configname(int argc, char *argv[]) {//Obtenim el nom del client.cfg a llegir
+char *get_configname(int argc, char *argv[]) {
+    //Obtenim el nom del client.cfg a llegir
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-c") == 0) {
             if (argv[i + 1] != NULL) {
@@ -814,7 +832,8 @@ char *get_configname(int argc, char *argv[]) {//Obtenim el nom del client.cfg a 
     return "client.cfg";
 }
 
-void print_status() {//Imprimeix a l'inici del programa i quan emprem la comanda status, el conjunt d'elements del client
+void print_status() {
+    //Imprimeix a l'inici del programa i quan emprem la comanda status, el conjunt d'elements del client
     printf("********************* DADES DISPOSITIU ***********************\n");
     printf("Identificador: %s\n", user.id);
     printf("Estat: %s \n", str_status_or_type(status));
@@ -829,8 +848,8 @@ void print_status() {//Imprimeix a l'inici del programa i quan emprem la comanda
     printf("***************************************************************\n");
 }
 
-char *str_status_or_type(unsigned char state) { //Retorna amb string el valor del paquet o estat del client
-
+char *str_status_or_type(unsigned char state) {
+    //Retorna amb string el valor del paquet o estat del client
     switch (state) {
         case 0xf0:
             return "DISCONNECTED";
@@ -922,8 +941,8 @@ void status_change_message(unsigned char state){//Imprimeix canvis d'estat del c
 
 }
 
-void command_treatment() { //Tracta les comandes que anirem demanant en l'estat SEND_ALIVE del client
-
+void command_treatment() {
+    //Tracta les comandes que anirem demanant en l'estat SEND_ALIVE del client
     while (1) {
         char *comm = read_command();
         if (strstr(comm, "status") == comm && status == SEND_ALIVE) {
@@ -977,7 +996,8 @@ char *read_command() {//Funcio que llegueix les comandes emprades a la terminal
     return comm;
 }
 
-void set_element(char *buffer) {//Funcio que tracta els SET_DATA o la comanda set del mateix client
+void set_element(char *buffer) {
+    //Funcio que tracta els SET_DATA o la comanda set del mateix client
     char *cpy_token, *element;
     char element_value[16];
 
@@ -1008,7 +1028,8 @@ void set_element(char *buffer) {//Funcio que tracta els SET_DATA o la comanda se
     printf("Element no trobat \n");
 }
 
-int get_element(char *element) {//Obte l'index de l'element donat com a argument en forma de string
+int get_element(char *element) {
+    //Obte l'index de l'element donat com a argument en forma de string
 
     for (int i = 0; i < 6; i++) {
         if (strcmp((const char *) &user.elements[i], element) == 0) {
