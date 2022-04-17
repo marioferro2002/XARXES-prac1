@@ -1016,12 +1016,12 @@ void set_element(char *buffer) {
         printf("Us comanda: set <identificador_element> <nou_valor> \n");
         return;
     }
-    printf("%s\n", cpy_token);
     strncpy(element_value, cpy_token, 16);
 
     for (int i = 0; i < 6; i++) {
         if (strcmp((const char *) &user.elements[i], element) == 0) {
             strcpy((char *) &user.valor_elements[i], element_value);
+            printf("Element %s actualitzat valor: %s \n", user.elements[i], element_value);
             return;
         }
     }

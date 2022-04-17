@@ -163,8 +163,8 @@ def register_reg(received_package, client_ip, client_udp_port):
     global sock
     client_id_transm = received_package[1].decode().split("\x00")[0]
     client_id_comm = received_package[2].decode().split("\x00")[0]
-
-    if not client_id_and_id_comm_valid(client_id_transm, client_id_comm):
+    client_dades = received_package[3].decode(errors="ignore").split("\x00")[0]
+    if not client_id_and_id_comm_valid(client_id_transm, client_id_comm) and len(client_dades) > 0:
         print_message("ERROR -> Paquet del client: " + client_id_transm + " no valid, enviant REG_REJ....")
         send_pck = reg_rej_pack_maker("Dades incorrectes")
         sock.udp_socket.sendto(send_pck, (client_ip, client_udp_port))
@@ -250,16 +250,28 @@ def alive_phase(recv_pack):
     client_dades = recv_pack[3].decode("latin-1").split("\x00")[0]
     alive_client = get_client_by_Id(client_id_transm)
 
-    if alive_client.id_comm == client_id_comm and len(client_dades) == 0:
-        if alive_client.status == REGISTERED:
-            alive_client.first_alive_recv = True
-        alive_client.receive_alive = True
-        alive_pck = alive_pack_maker(alive_client.id, alive_client.id_comm)
-        send_udp_packet(alive_client, alive_pck)
-    elif alive_client.status == REGISTERED:
-        print("INFO -> 1r Alive no valid: ", alive_client.id)
-        alive_rej_pck = alive_rej_pack_maker(alive_client.id, alive_client.id_comm)
-        change_status(alive_client.id, DISCONNECTED)
+    if alive_client.status == REGISTERED or alive_client.status == SEND_ALIVE:
+        if alive_client.id_comm == client_id_comm and len(client_dades) == 0:
+            if alive_client.status == REGISTERED:
+                alive_client.first_alive_recv = True
+            alive_client.receive_alive = True
+            alive_pck = alive_pack_maker(alive_client.id, alive_client.id_comm)
+            send_udp_packet(alive_client, alive_pck)
+            return
+        elif alive_client.status == REGISTERED:
+            print("INFO -> 1r Alive no valid: ", alive_client.id)
+            alive_rej_pck = alive_rej_pack_maker(alive_client.id, alive_client.id_comm)
+            send_udp_packet(alive_client, alive_rej_pck)
+            change_status(alive_client.id, DISCONNECTED)
+            return
+        else:
+            print("SERVER -> ALIVE no valid ")
+            alive_rej_pck = alive_rej_pack_maker(alive_client.id, alive_client.id_comm)
+            send_udp_packet(alive_client, alive_rej_pck)
+            change_status(alive_client.id, DISCONNECTED)
+            return
+    else:
+        print("SERVER -> ALIVE del client: " + client_id_transm + " no acceptat, client no esta REGISTERED o SEND_ALIVE ")
         return
 
 
@@ -558,6 +570,8 @@ def set_call(argument):
             try:
                 client.tcp_socket.settimeout(M)
                 recv_packet = receive_tcp_packet(127, client.tcp_socket)
+                if not recv_packet:
+                    return
                 set_get_rec_procedure(recv_packet, client, element, SET_DATA)
                 client.tcp_socket.close()
                 return
@@ -599,6 +613,8 @@ def get_call(argument):
         try:
             client.tcp_socket.settimeout(M)
             recv_packet = receive_tcp_packet(127, client.tcp_socket)
+            if not recv_packet:
+                return
             set_get_rec_procedure(recv_packet, client, element, GET_DATA)
             client.tcp_socket.close()
             return
@@ -632,6 +648,9 @@ def set_get_rec_procedure(recv_packet, client, element, procedure_type):
                 "Operacio: " + str_status(procedure_type) + " fallida, element :" + element + " no actualitzat")
         elif pack_type == DATA_REJ:
             change_status(client_id, DISCONNECTED)
+        return
+    else:
+        print_message("SERVER -> Paquet : " + str_status(pack_type) + " no valid. No s'han actualitzat les dades")
         return
 
 
